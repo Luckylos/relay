@@ -2,3 +2,10 @@ name = "codex-worker-relay"
 main = "src/index.ts"
 compatibility_date = "2026-08-19"
 compatibility_flags = ["nodejs_compat"]
+
+# Relay egress is mandatory. The URL and key id are non-secret and live here so a
+# deploy cannot silently lose them; EGRESS_RELAY_SECRET is a Worker secret and is
+# deliberately absent — see docs/https-relay-design-v1.md.
+[vars]
+EGRESS_RELAY_URL = "https://relay.invalid/v1/forward"
+EGRESS_RELAY_KEY_ID = "dev-key"

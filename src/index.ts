@@ -1,25 +1,12 @@
 import { readIdentityConfig, type IdentityEnv, type IdentityConfig } from "./config";
 import { errorResponse } from "./errors";
 import { projectIdentity, resolveIdentity } from "./identity";
-import { sendDirect } from "./egress/direct";
-import {
-  DEFAULT_TUNNEL_TIMEOUT_MS,
-  ProxyConfigError,
-  ProxyError,
-  parseProxyUrl,
-  sendViaProxy,
-  type ProxyConfig,
-} from "./egress/proxy";
+import { RelayConfigError, readRelayConfig, type RelayEnv } from "./relay/config";
+import { sendViaRelay } from "./relay/client";
 import { parseTarget, TargetError } from "./target";
 
-export interface Env extends IdentityEnv {
-  /**
-   * `socks5://[user:pass@]host:port` (or `socks5h://`). Unset means direct
-   * Cloudflare egress. Carries credentials, so it belongs in a Worker secret.
-   */
-  EGRESS_PROXY_URL?: string;
+export interface Env extends IdentityEnv, RelayEnv {
   CODEX_PROXY_MAX_BODY_BYTES?: string;
-  CODEX_PROXY_TUNNEL_TIMEOUT_MS?: string;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
@@ -57,22 +44,18 @@ const worker = {
       return errorResponse(400, "invalid target", "invalid_target");
     }
 
-    // Resolved before any egress so a misconfigured proxy fails closed instead
-    // of quietly leaking the request out of the Worker's own IP.
-    let proxy: ProxyConfig | undefined;
-    if (env.EGRESS_PROXY_URL?.length) {
-      try {
-        proxy = parseProxyUrl(env.EGRESS_PROXY_URL);
-      } catch (error) {
-        if (error instanceof ProxyConfigError) {
-          return errorResponse(
-            502,
-            "configured proxy egress is unavailable",
-            "proxy_unavailable",
-          );
-        }
-        throw error;
+    // Resolved before the body is even read. The relay is the only egress: its
+    // whole purpose is that upstream traffic leaves the VPS address, so a
+    // missing or malformed relay configuration must fail the request rather than
+    // quietly fall back to the Worker's own Cloudflare egress.
+    let relay;
+    try {
+      relay = readRelayConfig(env);
+    } catch (error) {
+      if (error instanceof RelayConfigError) {
+        return errorResponse(502, "relay egress is unavailable", "relay_unavailable");
       }
+      throw error;
     }
 
     let body: Uint8Array;
@@ -86,7 +69,7 @@ const worker = {
       return errorResponse(413, "request body too large", "request_too_large");
     }
 
-    let egress;
+    let projected;
     try {
       const identity = resolveIdentity(request.headers, identityConfig(env));
       const headers = projectIdentity(identity, request.headers);
@@ -95,40 +78,25 @@ const worker = {
         body,
       );
 
-      egress = {
-        target,
-        method: request.method,
-        headers,
-        body: projectedBody,
-      };
+      projected = { headers, body: projectedBody };
     } catch {
       return errorResponse(502, "upstream request failed", "upstream_error");
-    }
-
-    if (proxy) {
-      try {
-        return await sendViaProxy({
-          ...egress,
-          proxy,
-          timeoutMs: positiveInt(
-            env.CODEX_PROXY_TUNNEL_TIMEOUT_MS,
-            DEFAULT_TUNNEL_TIMEOUT_MS,
-          ),
-        });
-      } catch (error) {
-        // Generic messages only: tunnel errors quote proxy hostnames and
-        // handshake detail that must not reach the client.
-        if (error instanceof ProxyError && error.code === "proxy_timeout") {
-          return errorResponse(504, "proxy egress timed out", "proxy_timeout");
-        }
-        return errorResponse(502, "proxy egress failed", "proxy_unavailable");
-      }
     }
 
     try {
-      return await sendDirect(egress);
+      return await sendViaRelay({
+        relayUrl: relay.url,
+        keyId: relay.keyId,
+        secret: relay.secret,
+        target,
+        method: request.method,
+        headers: projected.headers,
+        body: projected.body,
+      });
     } catch {
-      return errorResponse(502, "upstream request failed", "upstream_error");
+      // Generic message only: relay failures quote relay hostnames and
+      // signing detail that must not reach the client.
+      return errorResponse(502, "relay egress failed", "relay_unavailable");
     }
   },
 };

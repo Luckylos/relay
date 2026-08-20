@@ -7,6 +7,11 @@ export default defineConfig({
       wrangler: {
         configPath: "./wrangler.toml",
       },
+      // EGRESS_RELAY_SECRET is a Worker secret, so it is absent from
+      // wrangler.toml by design. Tests supply a throwaway value.
+      miniflare: {
+        bindings: { EGRESS_RELAY_SECRET: "integration-test-secret" },
+      },
     }),
   ],
   test: {

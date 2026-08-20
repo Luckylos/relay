@@ -2,6 +2,7 @@ export type RelayErrorType =
   | "invalid_target"
   | "request_too_large"
   | "upstream_error"
+  | "relay_unavailable"
   | "proxy_unavailable"
   | "proxy_timeout";
 
