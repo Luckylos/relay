@@ -1,29 +1,7 @@
 import type { TargetRequest } from "../target";
-import { projectResponseHeaders } from "../headers";
+import { isStrippedRequestHeader, projectResponseHeaders } from "../headers";
 import { base64UrlEncode, canonicalizeHeaders, utf8 } from "./protocol";
 import { sha256Base64Url, signRelayRequest } from "./signing";
-
-/** Control headers are reserved for the relay envelope itself. */
-const CONTROL_PREFIX = "x-codex-relay-";
-
-/**
- * Headers describing *this* hop's connection or framing. The relay re-frames the
- * request on its own connection, so forwarding them is both meaningless and
- * rejected by the relay's canonical-header validation.
- */
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "content-length",
-  "host",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "proxy-connection",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
 
 export type RelayFetch = (request: Request) => Promise<Response>;
 
@@ -49,8 +27,9 @@ function newNonce(): string {
 /**
  * Business headers destined for the upstream, as name/value pairs.
  *
- * Both hop-by-hop and relay control headers are dropped: a client must not be
- * able to forge an envelope field by sending it as a business header.
+ * Hop-by-hop, relay control, source-revealing and ingress-auth headers are all
+ * dropped by `isStrippedRequestHeader`, so a client can neither forge an envelope
+ * field nor leak its own origin to the upstream.
  */
 export function projectRelayHeaders(
   headers: Headers,
@@ -58,7 +37,7 @@ export function projectRelayHeaders(
   const projected: Array<readonly [string, string]> = [];
   for (const [rawName, value] of headers) {
     const name = rawName.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(name) || name.startsWith(CONTROL_PREFIX)) {
+    if (isStrippedRequestHeader(name)) {
       continue;
     }
     projected.push([name, value] as const);

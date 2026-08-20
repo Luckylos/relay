@@ -3,6 +3,8 @@ export type RelayErrorType =
   | "request_too_large"
   | "upstream_error"
   | "relay_unavailable"
+  | "unauthorized"
+  | "ingress_misconfigured"
   | "proxy_unavailable"
   | "proxy_timeout";
 

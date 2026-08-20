@@ -1,11 +1,12 @@
 import { readIdentityConfig, type IdentityEnv, type IdentityConfig } from "./config";
 import { errorResponse } from "./errors";
 import { projectIdentity, resolveIdentity } from "./identity";
+import { authenticateIngress, type IngressEnv } from "./ingress-auth";
 import { RelayConfigError, readRelayConfig, type RelayEnv } from "./relay/config";
 import { sendViaRelay } from "./relay/client";
 import { parseTarget, TargetError } from "./target";
 
-export interface Env extends IdentityEnv, RelayEnv {
+export interface Env extends IdentityEnv, RelayEnv, IngressEnv {
   CODEX_PROXY_MAX_BODY_BYTES?: string;
 }
 
@@ -34,6 +35,22 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 
 const worker = {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    // First gate, before target parsing, body reads or any egress: an
+    // unauthenticated caller must not be able to probe target validity, consume
+    // relay quota or learn anything about relay configuration.
+    const auth = authenticateIngress(request.headers, env);
+    if (auth.outcome === "misconfigured") {
+      return errorResponse(
+        502,
+        "ingress authentication is not configured",
+        "ingress_misconfigured",
+      );
+    }
+    if (auth.outcome === "unauthorized") {
+      // Generic body: it must not reveal whether a token was presented.
+      return errorResponse(401, "unauthorized", "unauthorized");
+    }
+
     let target;
     try {
       target = parseTarget(request);

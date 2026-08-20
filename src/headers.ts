@@ -9,6 +9,75 @@ export const RESPONSE_HOP_BY_HOP_HEADERS = [
   "upgrade",
 ] as const;
 
+/**
+ * Headers describing *this* hop's connection or framing. The relay re-frames the
+ * request on its own connection, so forwarding them is meaningless and is
+ * rejected by the relay's canonical-header validation.
+ */
+export const REQUEST_HOP_BY_HOP_HEADERS = [
+  "connection",
+  "content-length",
+  "host",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+] as const;
+
+/**
+ * Headers injected by Cloudflare (or any fronting proxy) that describe the
+ * *client*, not the business request.
+ *
+ * The entire point of the relay is that upstream sees the VPS as the origin of
+ * the request. Forwarding these would hand the upstream the real client IP and
+ * the Cloudflare trace chain, defeating that property, so they are stripped even
+ * though they are not hop-by-hop in the RFC sense.
+ */
+export const SOURCE_REVEALING_HEADERS = [
+  "cdn-loop",
+  "cf-connecting-ip",
+  "cf-connecting-ipv6",
+  "cf-ipcountry",
+  "cf-ray",
+  "cf-visitor",
+  "cf-worker",
+  "forwarded",
+  "true-client-ip",
+  "x-client-ip",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+] as const;
+
+/** Control headers are reserved for the relay envelope itself. */
+export const RELAY_CONTROL_PREFIX = "x-codex-relay-";
+
+const STRIPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set<string>([
+  ...REQUEST_HOP_BY_HOP_HEADERS,
+  ...SOURCE_REVEALING_HEADERS,
+]);
+
+/**
+ * True when a client-supplied request header must not be forwarded upstream.
+ *
+ * The relay-control prefix is matched rather than listed so that adding an
+ * envelope field later cannot accidentally open a forgery path.
+ *
+ * The ingress token header (`x-codex-relay-token`) is covered by that same
+ * prefix, so it is deliberately not listed separately: the prefix rule is the
+ * single mechanism keeping every `x-codex-relay-*` header — envelope fields and
+ * the ingress credential alike — out of the signed block and off the wire.
+ */
+export function isStrippedRequestHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return STRIPPED_REQUEST_HEADERS.has(lower) || lower.startsWith(RELAY_CONTROL_PREFIX);
+}
+
 export function projectResponseHeaders(incoming: Headers): Headers {
   const output = new Headers();
   for (const [name, value] of incoming) {

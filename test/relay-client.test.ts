@@ -95,7 +95,11 @@ describe("relay client wire protocol", () => {
 });
 
 describe("worker relay fail-closed routing", () => {
+  /** 43 base64url chars = 32 random bytes, the production minimum. */
+  const TOKEN = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWZnaGk";
+  const AUTH = { "x-codex-relay-token": TOKEN } as const;
   const env = {
+    INGRESS_AUTH_TOKEN: TOKEN,
     EGRESS_RELAY_URL: RELAY_URL,
     EGRESS_RELAY_KEY_ID: KEY_ID,
     EGRESS_RELAY_SECRET: SECRET,
@@ -112,6 +116,7 @@ describe("worker relay fail-closed routing", () => {
       const response = await worker.fetch(
         new Request("https://worker.example.com/api.openai.com/v1/responses", {
           method: "POST",
+          headers: AUTH,
           body: "payload",
         }),
         partial as never,
@@ -136,9 +141,12 @@ describe("worker relay fail-closed routing", () => {
       const response = await worker.fetch(
         new Request("https://worker.example.com/api.openai.com/v1/responses", {
           method: "POST",
+          headers: AUTH,
           body: "payload",
         }),
-        {} as never,
+        // Ingress token present but relay unconfigured: this must exercise the
+        // relay fail-closed path, not the ingress gate.
+        { INGRESS_AUTH_TOKEN: TOKEN } as never,
         {} as ExecutionContext,
       );
       expect(response.status).toBe(502);
