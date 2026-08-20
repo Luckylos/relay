@@ -61,4 +61,34 @@ describe("parseTarget", () => {
       "https://example.com/v1%2Fresponses",
     );
   });
+
+  it("rejects IP literals and local names, not just malformed hostnames", () => {
+    // The contract is "any public HTTPS hostname", never "any IP". The relay's
+    // post-DNS SSRF policy would also refuse these, but letting them through
+    // here would spend relay quota on requests that must always fail and would
+    // leave one downstream check as the only defence.
+    for (const hostname of [
+      "203.0.113.9",
+      "127.0.0.1",
+      "192.168.1.1",
+      "10.0.0.1",
+      "169.254.169.254",
+      "localhost",
+      "LocalHost",
+      "localhost.",
+      "[2001:db8::1]",
+      "0.0.0.0",
+    ]) {
+      expect(
+        () => parseTarget(new Request(`https://relay.example/${hostname}/v1`)),
+        hostname,
+      ).toThrow(TargetError);
+    }
+  });
+
+  it("still accepts hostnames with digit-containing labels", () => {
+    // Only an all-digit final label is refused; digits elsewhere are ordinary.
+    expect(target("/api2.example.com/v1")).toBe("https://api2.example.com/v1");
+    expect(target("/1.2.3.example.com/v1")).toBe("https://1.2.3.example.com/v1");
+  });
 });

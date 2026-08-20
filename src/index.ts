@@ -2,6 +2,7 @@ import { readIdentityConfig, type IdentityEnv, type IdentityConfig } from "./con
 import { errorResponse } from "./errors";
 import { projectIdentity, resolveIdentity } from "./identity";
 import { authenticateIngress, type IngressEnv } from "./ingress-auth";
+import { RedirectError, rewriteLocation } from "./redirect";
 import { RelayConfigError, readRelayConfig, type RelayEnv } from "./relay/config";
 import { sendViaRelay } from "./relay/client";
 import { parseTarget, TargetError } from "./target";
@@ -100,8 +101,9 @@ const worker = {
       return errorResponse(502, "upstream request failed", "upstream_error");
     }
 
+    let response: Response;
     try {
-      return await sendViaRelay({
+      response = await sendViaRelay({
         relayUrl: relay.url,
         keyId: relay.keyId,
         secret: relay.secret,
@@ -115,6 +117,37 @@ const worker = {
       // signing detail that must not reach the client.
       return errorResponse(502, "relay egress failed", "relay_unavailable");
     }
+
+    // The relay never follows redirects, so a 3xx `Location` still points at the
+    // upstream host. Left alone, a redirect-following client would connect there
+    // directly from its own IP and bypass the fixed VPS egress entirely.
+    //
+    // Kept outside the block above so a rewrite failure is never misreported as a
+    // relay failure, and the relay's own errors keep their own mapping.
+    const location = response.headers.get("location");
+    if (location === null) {
+      return response;
+    }
+
+    let rewritten: string;
+    try {
+      rewritten = rewriteLocation(location, target, new URL(request.url));
+    } catch (error) {
+      if (error instanceof RedirectError) {
+        // Fail closed: never hand the client a Location that would take it off the
+        // relay path, and never leak the upstream's own Location value.
+        return errorResponse(502, "invalid upstream redirect", "invalid_upstream_redirect");
+      }
+      throw error;
+    }
+
+    const headers = new Headers(response.headers);
+    headers.set("location", rewritten);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   },
 };
 
