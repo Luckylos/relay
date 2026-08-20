@@ -257,4 +257,55 @@ describe("Worker relay egress", () => {
       upstream.mockRestore();
     }
   });
+
+  // Migrated from the retired SOCKS5 egress suite, which asserted that proxy
+  // credentials never reached a client-visible error. The signing secret is this
+  // architecture's equivalent long-lived credential, so the contract still binds:
+  // it authenticates the Worker to the relay and must never leave the Worker.
+  it("never exposes the relay signing secret to the client or the wire", async () => {
+    const SECRET = "s3cret-relay-signing-key";
+    const env: Env = { ...ENV, EGRESS_RELAY_SECRET: SECRET };
+
+    // Error path: an upstream failure whose own message embeds the secret, which
+    // is the shape a careless relay client or logger would produce.
+    const failing = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error(`relay rejected key ${SECRET}`));
+    try {
+      const response = await worker.fetch(
+        new Request("https://relay.example/example.com/v1/models", { headers: AUTH }),
+        env,
+        context(),
+      );
+      expect(response.status).toBe(502);
+      expect(await response.text()).not.toContain(SECRET);
+    } finally {
+      failing.mockRestore();
+    }
+
+    // Success path: the secret proves possession via the HMAC, so it must never
+    // travel as a header or body value on the outbound relay request.
+    const sending = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("ok", { status: 200 }));
+    try {
+      await worker.fetch(
+        new Request("https://relay.example/example.com/v1/models", {
+          method: "POST",
+          headers: { ...AUTH, "content-type": "application/json" },
+          body: '{"model":"probe"}',
+        }),
+        env,
+        context(),
+      );
+
+      const sent = sending.mock.calls[0]?.[0] as Request;
+      for (const [name, value] of sent.headers) {
+        expect(value, `${name} must not carry the secret`).not.toContain(SECRET);
+      }
+      expect(new TextDecoder().decode(await sent.arrayBuffer())).not.toContain(SECRET);
+    } finally {
+      sending.mockRestore();
+    }
+  });
 });
