@@ -1,7 +1,8 @@
 export type RelayErrorType =
   | "invalid_target"
   | "request_too_large"
-  | "upstream_error";
+  | "upstream_error"
+  | "proxy_unavailable";
 
 export function errorResponse(
   status: number,

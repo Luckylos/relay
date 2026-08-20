@@ -45,6 +45,14 @@ const worker = {
       return errorResponse(400, "invalid target", "invalid_target");
     }
 
+    if (env.EGRESS_PROXY_URL?.length) {
+      return errorResponse(
+        502,
+        "configured proxy egress is unavailable",
+        "proxy_unavailable",
+      );
+    }
+
     let body: Uint8Array;
     try {
       body = new Uint8Array(await request.arrayBuffer());

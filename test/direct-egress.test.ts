@@ -144,6 +144,25 @@ describe("direct Worker egress", () => {
     }
   });
 
+  it("fails closed when a proxy is configured but proxy egress is unavailable", async () => {
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unexpected direct fallback"));
+    try {
+      const response = await worker.fetch(
+        new Request("https://relay.example/example.com/v1/models"),
+        { ...ENV, EGRESS_PROXY_URL: "http://proxy.example:8080" },
+        context(),
+      );
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        error: { message: "configured proxy egress is unavailable", type: "proxy_unavailable" },
+      });
+      expect(upstream).not.toHaveBeenCalled();
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+
   it("returns a generic 502 when direct fetch fails", async () => {
     const upstream = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("secret upstream detail"));
     try {
