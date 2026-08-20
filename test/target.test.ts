@@ -7,19 +7,19 @@ function target(path: string, search = ""): string {
 
 describe("parseTarget", () => {
   it("maps a hostname-only path to the HTTPS root", () => {
-    expect(target("/jianzhile.vip")).toBe("https://jianzhile.vip/");
+    expect(target("/api.example.com")).toBe("https://api.example.com/");
   });
 
   it("preserves the remaining path and original query", () => {
     const result = parseTarget(
-      new Request("https://relay.example/jianzhile.vip/v1/responses?x=1&stream=true"),
+      new Request("https://relay.example/api.example.com/v1/responses?x=1&stream=true"),
     );
 
-    expect(result.hostname).toBe("jianzhile.vip");
+    expect(result.hostname).toBe("api.example.com");
     expect(result.pathname).toBe("/v1/responses");
     expect(result.search).toBe("?x=1&stream=true");
     expect(result.url.toString()).toBe(
-      "https://jianzhile.vip/v1/responses?x=1&stream=true",
+      "https://api.example.com/v1/responses?x=1&stream=true",
     );
   });
 

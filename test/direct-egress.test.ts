@@ -51,7 +51,7 @@ describe("direct Worker egress", () => {
 
     try {
       const request = new Request(
-        "https://relay.example/jianzhile.vip/v1/responses?stream=true&x=1",
+        "https://relay.example/api.example.com/v1/responses?stream=true&x=1",
         {
           method: "POST",
           headers: {
@@ -75,7 +75,7 @@ describe("direct Worker egress", () => {
       expect(new TextDecoder().decode(first?.value)).toBe("data: first\\n\\n");
 
       const [url, init] = upstream.mock.calls[0] ?? [];
-      expect(url).toBe("https://jianzhile.vip/v1/responses?stream=true&x=1");
+      expect(url).toBe("https://api.example.com/v1/responses?stream=true&x=1");
       expect(init?.method).toBe("POST");
       expect(init?.redirect).toBe("manual");
       expect(init?.headers).toBeInstanceOf(Headers);

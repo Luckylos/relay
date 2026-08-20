@@ -2,11 +2,12 @@
 
 Standalone Cloudflare Worker relay for forwarding Codex-compatible HTTPS requests.
 
-> **Current status:** direct Cloudflare `fetch()` egress is implemented and tested.
-> HTTP CONNECT and SOCKS5 egress are intentionally **not enabled**: the real
-> Cloudflare Workers capability spike did not establish the required proxy-tunnel
-> TLS/streaming path. If `EGRESS_PROXY_URL` is set, the Worker fails closed with
-> `502 proxy_unavailable`; it never silently falls back to direct egress.
+> **Current status:** direct Cloudflare `fetch()` egress and SOCKS5 proxy egress
+> are both implemented and covered by tests. HTTP CONNECT proxies are **not**
+> supported. When `EGRESS_PROXY_URL` is set, every request goes through the
+> proxy or fails closed with `502`/`504` — the Worker never silently falls back
+> to direct egress. End-to-end validation against a real upstream through a real
+> SOCKS5 node is still outstanding; see *Verification status*.
 
 ## Request URL
 
@@ -47,19 +48,37 @@ content encoding, and streaming body. `Connection`, `Transfer-Encoding`, and
 other HTTP hop-by-hop response headers are removed because the Worker creates a
 new downstream response.
 
-## Proxy configuration (blocked / fail-closed)
+## Proxy mode (SOCKS5)
 
-The planned configuration forms are documented here for compatibility with the
-frozen plan, but are not currently executable in this Worker build:
+Set `EGRESS_PROXY_URL` to route all upstream traffic through a SOCKS5 node:
 
 ```text
-EGRESS_PROXY_URL=http://proxy.example:8080
-EGRESS_PROXY_URL=http://user:pass@proxy.example:8080
 EGRESS_PROXY_URL=socks5://proxy.example:1080
 EGRESS_PROXY_URL=socks5://user:pass@proxy.example:1080
 ```
 
-If a proxy value is supplied, every request returns a sanitized response like:
+`socks5h://` is accepted as an alias. It makes no difference here because
+CONNECT always sends the upstream as `ATYP=DOMAIN`, so the proxy performs the
+DNS resolution and the Worker never resolves the upstream itself.
+
+The request path is:
+
+```text
+cloudflare:sockets connect(proxy, secureTransport: "starttls")
+  → SOCKS5 method negotiation
+  → RFC 1929 username/password auth (only when the URL carries credentials)
+  → CONNECT upstream:443 with ATYP=DOMAIN
+  → startTls({ expectedServerHostname: <upstream> })
+  → HTTP/1.1 request, streamed response
+```
+
+TLS is terminated by the Cloudflare runtime against the **upstream** hostname,
+not the proxy's. The proxy therefore sees only ciphertext and cannot present its
+own certificate; a hostname mismatch fails the handshake. This was confirmed on
+a real workerd runtime with a deliberate wrong-hostname negative control.
+
+Any other scheme, including `http://`, is rejected — HTTP CONNECT is not
+implemented. Unusable configuration fails closed before any egress:
 
 ```json
 {
@@ -70,16 +89,28 @@ If a proxy value is supplied, every request returns a sanitized response like:
 }
 ```
 
-No proxy URL, username, or password is written to the repository. A future
-implementation must load the value from a Worker Secret, for example:
+Failure mapping, all without a direct-egress fallback:
+
+| Condition | Status | `type` |
+| --- | --- | --- |
+| Unparseable URL or non-SOCKS5 scheme | `502` | `proxy_unavailable` |
+| Dial, negotiation, auth, or TLS failure | `502` | `proxy_unavailable` |
+| Handshake/TLS/response head past the deadline | `504` | `proxy_timeout` |
+
+Client-facing errors are generic by design: proxy hostnames, credentials, and
+handshake detail never appear in a response body. `CODEX_PROXY_TUNNEL_TIMEOUT_MS`
+(default `120000`) bounds setup only — it does not bound the response body, so a
+long-lived SSE stream is never truncated by it.
+
+The URL carries credentials, so supply it as a Worker Secret:
 
 ```bash
 wrangler secret put EGRESS_PROXY_URL
 ```
 
-Do not paste the secret into source, `.env` files committed to Git, logs, or
-error responses. The `wrangler secret put` command is documentation only; this
-repository does not deploy a working proxy adapter yet.
+Percent-encode credentials containing `@`, `:`, or `/`. Never paste the value
+into source, a committed `.env`, logs, or error responses. No proxy URL,
+username, or password is present anywhere in this repository.
 
 ## Codex identity projection
 
@@ -130,6 +161,13 @@ CODEX_PROXY_ACCEPT_ENCODING
 CODEX_PROXY_MAX_BODY_BYTES
 ```
 
+Proxy-related variables:
+
+```text
+EGRESS_PROXY_URL                 (Worker Secret; SOCKS5 only)
+CODEX_PROXY_TUNNEL_TIMEOUT_MS    (default 120000, setup phase only)
+```
+
 Set stable identity values through Worker variables/secrets appropriate to the
 deployment. Keep credentials in permission-restricted secret storage.
 
@@ -152,21 +190,29 @@ wrangler deploy --dry-run --outdir dist
 
 The project has CI coverage for the same `npm ci` + `npm run check` gate.
 
-## Cloudflare proxy capability decision
+## Verification status
 
-A temporary preview Worker was used to test the planned proxy path and was
-removed after the spike. Verified observations:
+Verified:
 
-- the Worker deployed and its health endpoint returned `200`;
-- `cloudflare:sockets` is available, but direct socket access to an HTTPS HTTP
-  origin on port 443 returned Cloudflare's documented disallowed-address/HTTP
-  service error;
-- the configured local HTTP/SOCKS5 test listener was not externally reachable
-  from Cloudflare, so HTTP CONNECT, SOCKS5 CONNECT, target TLS/SNI, and tunneled
-  SSE could not be proven on the real edge runtime;
-- the temporary Worker was deleted and the Cloudflare API confirmed that the
-  script no longer exists.
+- `npm run check` (typecheck, full Vitest suite, Wrangler dry-run build);
+- SOCKS5 negotiation, RFC 1929 auth, and `ATYP=DOMAIN` CONNECT framing against
+  in-memory socket fixtures, including fragmented replies;
+- HTTP/1.1 status/header parsing with `content-length`, chunked, and
+  close-delimited framing, plus a streaming test proving SSE events surface
+  before the response ends;
+- Worker-level wire-up: proxy dialled from `EGRESS_PROXY_URL`, TLS validated
+  against the upstream hostname, identity projection preserved on the proxy
+  path, generic credential-free errors, and no direct fallback on any failure;
+- native `startTls()` after SOCKS5 CONNECT on a real workerd runtime, with a
+  wrong-hostname negative control confirming certificate validation is active.
 
-Per the frozen plan, this stops the pure-Worker proxy branch rather than
-substituting direct mode for proxy mode. A future proxy implementation needs a
-separately approved architecture and a reachable controlled test node.
+Not yet verified:
+
+- end-to-end request through a real SOCKS5 node to a real upstream API,
+  including SSE, from a deployed Worker.
+
+An earlier capability spike concluded that Workers could not support proxy
+tunnelling. That conclusion was wrong in its cause: the test proxy was not
+reachable from Cloudflare's edge, and the TLS attempt used `node:tls`, which
+cannot wrap a `cloudflare:sockets` socket. Native `startTls()` on a reachable
+node works, which is what this implementation uses.

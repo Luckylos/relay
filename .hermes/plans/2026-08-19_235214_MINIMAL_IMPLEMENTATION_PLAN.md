@@ -23,13 +23,13 @@
 示例：
 
 ```text
-https://relay.example.com/jianzhile.vip/v1/responses?stream=true
+https://relay.example.com/api.example.com/v1/responses?stream=true
 ```
 
 解析为：
 
 ```text
-https://jianzhile.vip/v1/responses?stream=true
+https://api.example.com/v1/responses?stream=true
 ```
 
 ## 2. 已冻结的产品契约
@@ -444,8 +444,8 @@ And 不发起任何出站连接
 
 RED 用例：
 
-- `/jianzhile.vip` → `https://jianzhile.vip/`
-- `/jianzhile.vip/v1/responses?x=1` → path/query 正确。
+- `/api.example.com` → `https://api.example.com/`
+- `/api.example.com/v1/responses?x=1` → path/query 正确。
 - 两个不同域名均无需配置即可解析。
 - 空路径、只有 `/`、含 scheme、userinfo、端口或非法 hostname 返回 `invalid_target`。
 - encoded slash 不得改变首段边界。
