@@ -1,0 +1,59 @@
+[Unit]
+Description=Codex HTTPS Relay - signed dynamic HTTPS egress for the Cloudflare Worker
+After=network-online.target
+Wants=network-online.target
+# Crash-loop brake: 5 failures in 60s stops restarting and surfaces `failed`
+# to monitoring instead of restarting forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/codex-https-relay
+EnvironmentFile=/opt/codex-https-relay/relay.env
+ExecStart=/opt/codex-https-relay/codex-https-relay
+Restart=on-failure
+RestartSec=3
+# Never escalate to rebooting: this host carries the proxy egress and the
+# Cloudflare tunnel, so a bad deploy of this service must not take it down.
+StartLimitAction=none
+
+# --- Resource ceilings. This host has 973M total and already runs xray +
+# cloudflared, so the ceiling is deliberately far below the box: a leak here
+# must not OOM the proxy egress.
+MemoryHigh=192M
+MemoryMax=256M
+TasksMax=256
+LimitNOFILE=16384
+
+# --- Filesystem sandbox: all state is in memory, no files are written.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=
+
+# --- Privilege sandbox: binds loopback:18093, so no capabilities are needed.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+PrivateDevices=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# NOTE: WatchdogSec is deliberately NOT set — the process has no sd_notify
+# heartbeat, so a watchdog would kill a healthy service every interval.
+
+[Install]
+WantedBy=multi-user.target
