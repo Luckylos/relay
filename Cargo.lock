@@ -173,6 +173,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tower",
+ "url",
  "uuid",
  "webpki-roots 0.26.11",
 ]

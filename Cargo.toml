@@ -38,6 +38,7 @@ serde = { version = "1", features = ["derive"] }
 # Identity synthesis (ported from the Python codex-ua-proxy):
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
+url = "2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
