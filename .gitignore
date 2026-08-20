@@ -1,0 +1,4 @@
+# Toolchain outputs live inside each subtree; see relay-server/.gitignore and
+# worker/.gitignore. Only genuinely repo-wide artifacts belong here.
+*.bak
+*.bak-*
