@@ -7,6 +7,9 @@ edition = "2021"
 name = "codex-egress-relay"
 path = "main.rs"
 
+[lib]
+path = "lib.rs"
+
 [dependencies]
 # http2 + stream. default-features=false disables auto gzip/deflate/brotli so
 # responses are relayed byte-for-byte and we never inject accept-encoding.
@@ -24,6 +27,10 @@ axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
 bytes = "1"
 futures-util = "0.3"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
 # Identity synthesis (ported from the Python codex-ua-proxy):
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
