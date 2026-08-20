@@ -1,9 +1,24 @@
+use std::error::Error;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use codex_egress_relay::relay_resolver::{DnsLookup, LookupFuture, ResolverError, SafeResolver};
 use reqwest::dns::Resolve;
+
+fn test_tls_config() -> rustls::ClientConfig {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(root_store)
+    .with_no_client_auth()
+}
 
 struct StubLookup {
     addresses: Vec<IpAddr>,
@@ -96,6 +111,34 @@ async fn system_lookup_rejects_localhost_after_resolution() {
         resolver.resolve_ips("localhost").await,
         Err(ResolverError::Policy(_))
     ));
+}
+
+#[tokio::test]
+async fn configures_reqwest_to_use_safe_resolver_and_disable_proxies() {
+    let client = SafeResolver::system()
+        .configure(reqwest::Client::builder().use_preconfigured_tls(test_tls_config()))
+        .build()
+        .unwrap();
+
+    let error = client
+        .get("https://localhost/")
+        .send()
+        .await
+        .expect_err("localhost must be rejected before a connection attempt");
+
+    let mut causes = Vec::new();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        causes.push(cause.to_string());
+        source = cause.source();
+    }
+
+    assert!(
+        causes
+            .iter()
+            .any(|cause| cause.contains("DNS policy rejected")),
+        "unexpected resolver error chain: {error}; causes: {causes:?}"
+    );
 }
 
 #[allow(dead_code)]

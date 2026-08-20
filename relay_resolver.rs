@@ -55,6 +55,10 @@ impl SafeResolver {
         let addresses = self.lookup.lookup(hostname).await?;
         validate_resolved_addresses(&addresses).map_err(ResolverError::Policy)
     }
+
+    pub fn configure(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        builder.no_proxy().dns_resolver(Arc::new(self.clone()))
+    }
 }
 
 impl Resolve for SafeResolver {
