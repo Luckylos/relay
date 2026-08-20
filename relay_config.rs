@@ -1,11 +1,20 @@
 use std::net::SocketAddr;
 
+use codex_egress_relay::https_forwarder::{
+    DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS, DEFAULT_STREAM_STALL_TIMEOUT_SECS,
+};
+
 pub struct RelayConfig {
     pub listen_addr: SocketAddr,
     pub clock_skew_secs: i64,
     pub current_key_id: String,
     pub current_secret: Vec<u8>,
     pub previous_key: Option<(String, Vec<u8>)>,
+    /// Deadline for the upstream's status line. Reasoning turns can stall here
+    /// for a long time before emitting anything, so this is operator-tunable.
+    pub response_header_timeout_secs: u64,
+    /// Budget for silence *between* response chunks once streaming has begun.
+    pub stream_stall_timeout_secs: u64,
 }
 
 impl RelayConfig {
@@ -28,12 +37,23 @@ impl RelayConfig {
             ),
         };
 
+        let response_header_timeout_secs = parse_timeout_secs(
+            "CODEX_RELAY_RESPONSE_HEADER_TIMEOUT_SECS",
+            DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS,
+        )?;
+        let stream_stall_timeout_secs = parse_timeout_secs(
+            "CODEX_RELAY_STREAM_STALL_TIMEOUT_SECS",
+            DEFAULT_STREAM_STALL_TIMEOUT_SECS,
+        )?;
+
         Ok(Self {
             listen_addr,
             clock_skew_secs,
             current_key_id,
             current_secret,
             previous_key,
+            response_header_timeout_secs,
+            stream_stall_timeout_secs,
         })
     }
 }
@@ -61,6 +81,26 @@ fn parse_clock_skew(value: Option<String>) -> Result<i64, String> {
         return Err("CODEX_RELAY_CLOCK_SKEW_SECS must be a positive integer".to_owned());
     }
     Ok(parsed)
+}
+
+/// Parse a positive timeout override, falling back to the compiled default.
+///
+/// Fails closed on a malformed or zero value rather than silently substituting
+/// the default: a typo in a unit file must not quietly change egress deadlines.
+fn parse_timeout_secs(name: &str, default: u64) -> Result<u64, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) if value.is_empty() => Ok(default),
+        Ok(value) => {
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|_| format!("{name} must be a positive integer"))?;
+            if parsed == 0 {
+                return Err(format!("{name} must be a positive integer"));
+            }
+            Ok(parsed)
+        }
+    }
 }
 
 #[cfg(test)]
