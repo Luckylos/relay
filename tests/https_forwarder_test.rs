@@ -1,92 +1,20 @@
-use std::net::{IpAddr, SocketAddr};
+mod common;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
 use codex_egress_relay::https_forwarder::{build_egress_client, HttpsForwarder};
 use codex_egress_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
-use codex_egress_relay::relay_resolver::{DnsLookup, LookupFuture, SafeResolver};
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use codex_egress_relay::relay_resolver::SafeResolver;
+use common::{
+    client_tls_config, collect_body, issue_upstream_certificate, safe_resolver_for,
+    server_tls_config, Issued, PinnedResolver,
+};
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-
-/// A self-signed leaf for `api.example.com`, returned with its key so the test
-/// client can trust it as its own root. `danger_accept_invalid_certs` is not an
-/// option here: reqwest cannot weaken a `use_preconfigured_tls` config, and the
-/// production path must keep real certificate verification anyway.
-struct Issued {
-    certificate: CertificateDer<'static>,
-    key: PrivateKeyDer<'static>,
-}
-
-fn issue_upstream_certificate() -> Issued {
-    let certified = rcgen::generate_simple_self_signed(vec!["api.example.com".to_owned()]).unwrap();
-    Issued {
-        certificate: CertificateDer::from(certified.cert.der().to_vec()),
-        key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            certified.signing_key.serialize_der(),
-        )),
-    }
-}
-
-fn client_tls_config(trusted: Option<CertificateDer<'static>>) -> rustls::ClientConfig {
-    let mut root_store = rustls::RootCertStore::empty();
-    match trusted {
-        Some(certificate) => root_store.add(certificate).unwrap(),
-        None => root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
-    }
-
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_root_certificates(root_store)
-    .with_no_client_auth();
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    config
-}
-
-fn server_tls_config(issued: Issued) -> rustls::ServerConfig {
-    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(vec![issued.certificate], issued.key)
-    .unwrap();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    config
-}
-
-/// Test seam that stands in for a resolver whose DNS answers are already
-/// trusted, so forwarding mechanics can be exercised against a loopback
-/// upstream. Production never uses this: it uses `SafeResolver`.
-struct PinnedResolver(SocketAddr);
-
-impl Resolve for PinnedResolver {
-    fn resolve(&self, _name: Name) -> Resolving {
-        let address = self.0;
-        Box::pin(async move {
-            let addresses: Addrs = Box::new(std::iter::once(address));
-            Ok(addresses)
-        })
-    }
-}
-
-/// DNS answer injected into the real `SafeResolver` so the SSRF policy runs on
-/// a controlled result instead of the host resolver.
-struct FixedLookup(Vec<IpAddr>);
-
-impl DnsLookup for FixedLookup {
-    fn lookup(&self, _hostname: &str) -> LookupFuture {
-        let addresses = self.0.clone();
-        Box::pin(async move { Ok(addresses) })
-    }
-}
 
 /// Minimal HTTP/1.1-over-TLS upstream. It asserts the projected request line,
 /// business header and body arrived, then writes back the supplied response and
@@ -190,7 +118,8 @@ async fn forwards_method_target_headers_and_body_over_https() {
         .unwrap();
 
     assert_eq!(response.status, reqwest::StatusCode::CREATED);
-    assert_eq!(response.body, Bytes::from_static(b"upstream"));
+    let body = collect_body(response.body).await.unwrap();
+    assert_eq!(body, Bytes::from_static(b"upstream"));
     assert_eq!(response.headers["content-type"], "application/json");
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
 }
@@ -232,7 +161,7 @@ async fn refuses_hostname_resolving_to_loopback_without_connecting() {
     .await;
 
     // The real SafeResolver, fed a DNS answer that points at the local upstream.
-    let resolver = SafeResolver::from_lookup(FixedLookup(vec![upstream.ip()]));
+    let resolver = safe_resolver_for(vec![upstream.ip()]);
     let client = build_egress_client(client_tls_config(Some(trusted)), Arc::new(resolver), 5);
     let forwarder = HttpsForwarder::new(client);
 

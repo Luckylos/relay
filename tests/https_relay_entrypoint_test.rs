@@ -35,11 +35,11 @@ impl Forwarder for RecordingForwarder {
         Box::pin(async move {
             assert_eq!(request.method, "POST");
             assert_eq!(request.target, "https://api.example.com/v1/responses");
-            Ok(ForwardResponse {
-                status: StatusCode::ACCEPTED,
-                headers: HeaderMap::new(),
-                body: Bytes::from_static(b"forwarded"),
-            })
+            Ok(ForwardResponse::from_bytes(
+                StatusCode::ACCEPTED,
+                HeaderMap::new(),
+                Bytes::from_static(b"forwarded"),
+            ))
         })
     }
 }

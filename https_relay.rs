@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use futures_util::future::BoxFuture;
+use futures_util::stream::BoxStream;
 
 use crate::relay_auth::{AuthError, AuthGate, RelayAuthRequest};
 use crate::relay_protocol::{
@@ -47,10 +48,29 @@ pub struct ForwardRequest {
     pub body: Bytes,
 }
 
+/// Upstream response body, still on the wire.
+///
+/// The relay must not buffer this: SSE turns from the Responses API stay open
+/// for minutes, so a `Bytes` here would hold every event until the turn ended
+/// and would let one caller pin an unbounded amount of relay memory.
+pub type ForwardStream = BoxStream<'static, Result<Bytes, std::io::Error>>;
+
 pub struct ForwardResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
-    pub body: Bytes,
+    pub body: ForwardStream,
+}
+
+impl ForwardResponse {
+    /// Build a response whose body is already in memory. Only for callers that
+    /// genuinely have complete bytes (tests, synthesized bodies).
+    pub fn from_bytes(status: StatusCode, headers: HeaderMap, body: Bytes) -> Self {
+        Self {
+            status,
+            headers,
+            body: Box::pin(futures_util::stream::once(async move { Ok(body) })),
+        }
+    }
 }
 
 pub trait Forwarder: Send + Sync + 'static {
@@ -315,7 +335,7 @@ fn current_unix_seconds() -> i64 {
 
 impl IntoResponse for ForwardResponse {
     fn into_response(self) -> Response {
-        let mut response = Response::new(Body::from(self.body));
+        let mut response = Response::new(Body::from_stream(self.body));
         *response.status_mut() = self.status;
         *response.headers_mut() = self.headers;
         response
