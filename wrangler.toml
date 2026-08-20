@@ -7,5 +7,5 @@ compatibility_flags = ["nodejs_compat"]
 # deploy cannot silently lose them; EGRESS_RELAY_SECRET is a Worker secret and is
 # deliberately absent — see docs/https-relay-design-v1.md.
 [vars]
-EGRESS_RELAY_URL = "https://relay.invalid/v1/forward"
-EGRESS_RELAY_KEY_ID = "dev-key"
+EGRESS_RELAY_URL = "https://relay.543822.xyz/v1/forward"
+EGRESS_RELAY_KEY_ID = "w-20260820"
