@@ -1,2 +1,3 @@
+pub mod https_relay;
 pub mod relay_auth;
 pub mod relay_protocol;

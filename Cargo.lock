@@ -172,6 +172,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tower",
  "uuid",
  "webpki-roots 0.26.11",
 ]
