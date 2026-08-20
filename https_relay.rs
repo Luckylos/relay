@@ -33,6 +33,10 @@ const FORWARD_HEADERS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardError {
+    InvalidTarget,
+    InvalidHeader,
+    Timeout,
+    Upstream,
     Unavailable,
 }
 
@@ -135,6 +139,18 @@ async fn forward(State(state): State<RelayState>, request: Request) -> Response 
     let result = state.forwarder.forward(forward_request).await;
     match result {
         Ok(response) => response.into_response(),
+        Err(ForwardError::InvalidTarget) => {
+            reject(StatusCode::BAD_REQUEST, "relay_invalid_target").into_response()
+        }
+        Err(ForwardError::InvalidHeader) => {
+            reject(StatusCode::BAD_REQUEST, "relay_invalid_header").into_response()
+        }
+        Err(ForwardError::Timeout) => {
+            reject(StatusCode::GATEWAY_TIMEOUT, "relay_upstream_timeout").into_response()
+        }
+        Err(ForwardError::Upstream) => {
+            reject(StatusCode::BAD_GATEWAY, "relay_upstream_error").into_response()
+        }
         Err(ForwardError::Unavailable) => {
             reject(StatusCode::BAD_GATEWAY, "relay_forward_unavailable").into_response()
         }

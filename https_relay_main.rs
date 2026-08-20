@@ -2,23 +2,12 @@ mod relay_config;
 
 use std::sync::Arc;
 
-use codex_egress_relay::https_relay::{
-    build_app, ForwardError, ForwardRequest, ForwardResponse, Forwarder, RelayState,
+use codex_egress_relay::https_forwarder::{
+    build_production_client, HttpsForwarder, DEFAULT_TIMEOUT_SECS,
 };
+use codex_egress_relay::https_relay::{build_app, RelayState};
 use codex_egress_relay::relay_auth::{AuthGate, AuthPolicy, KeyRing};
-use futures_util::future::BoxFuture;
 use relay_config::RelayConfig;
-
-struct NoopForwarder;
-
-impl Forwarder for NoopForwarder {
-    fn forward(
-        &self,
-        _request: ForwardRequest,
-    ) -> BoxFuture<'static, Result<ForwardResponse, ForwardError>> {
-        Box::pin(async { Err(ForwardError::Unavailable) })
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -32,7 +21,10 @@ async fn main() {
     }
 
     let auth = AuthGate::new(keys, AuthPolicy::new(config.clock_skew_secs));
-    let app = build_app(RelayState::new(auth, Arc::new(NoopForwarder)));
+    // Egress: shared rustls/aws-lc-rs fingerprint config, SSRF-safe resolver,
+    // no proxy env override, no automatic redirects.
+    let forwarder = HttpsForwarder::new(build_production_client(DEFAULT_TIMEOUT_SECS));
+    let app = build_app(RelayState::new(auth, Arc::new(forwarder)));
     let listener = tokio::net::TcpListener::bind(config.listen_addr)
         .await
         .unwrap_or_else(|error| panic!("relay bind error: {error}"));

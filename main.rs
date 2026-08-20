@@ -31,7 +31,6 @@
 mod config;
 mod identity;
 mod proxy;
-mod tls;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,6 +40,7 @@ use axum::{
     Router,
 };
 
+use codex_egress_relay::tls;
 use config::Config;
 use proxy::{health, proxy as proxy_handler, AppState};
 

@@ -244,7 +244,7 @@ mod tests {
 
     fn state_for(base: &str) -> AppState {
         AppState {
-            client: crate::tls::build_client(30),
+            client: codex_egress_relay::tls::build_client(30),
             cfg: Arc::new(test_cfg(base)),
         }
     }
