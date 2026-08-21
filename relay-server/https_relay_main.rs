@@ -23,14 +23,22 @@ async fn main() {
     let auth = AuthGate::new(keys, AuthPolicy::new(config.clock_skew_secs));
     // Egress: shared rustls/aws-lc-rs fingerprint config, SSRF-safe resolver,
     // no proxy env override, no automatic redirects.
-    let forwarder = HttpsForwarder::new(build_production_client_with_stall(
-        DEFAULT_TIMEOUT_SECS,
-        config.stream_stall_timeout_secs,
-    ))
+    let forwarder = HttpsForwarder::with_response_limit(
+        build_production_client_with_stall(
+            DEFAULT_TIMEOUT_SECS,
+            config.stream_stall_timeout_secs,
+            config.connect_timeout_secs,
+        ),
+        config.max_response_bytes,
+    )
     .with_response_header_timeout(std::time::Duration::from_secs(
         config.response_header_timeout_secs,
     ));
-    let app = build_app(RelayState::new(auth, Arc::new(forwarder)));
+    let app = build_app(
+        RelayState::new(auth, Arc::new(forwarder))
+            .with_max_body_bytes(config.max_body_bytes)
+            .with_max_concurrency(config.max_concurrency),
+    );
     let listener = tokio::net::TcpListener::bind(config.listen_addr)
         .await
         .unwrap_or_else(|error| panic!("relay bind error: {error}"));

@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Semaphore;
 
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{Request, State};
@@ -15,7 +16,21 @@ use crate::relay_protocol::{
     base64url_decode, canonicalize_headers, sha256_base64url, RelaySigningInput,
 };
 
-const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+/// Default cap on requests in flight.
+///
+/// Nothing else bounds this. Each in-flight request holds a task, a connection
+/// slot, and up to `max_response_bytes` of streaming buffer, and the egress
+/// deadlines are deliberately generous for SSE turns -- so a burst of slow
+/// upstreams grows until the process runs out of memory or file descriptors.
+/// That failure is an unattributable crash; refusing at the door is a documented
+/// `503 relay_busy` the Worker already knows how to map.
+pub const DEFAULT_MAX_CONCURRENCY: usize = 64;
+
+/// Default ceiling on an accepted request body.
+///
+/// Enforced before authentication: computing an HMAC over an oversized body is
+/// work an unauthenticated caller could otherwise force the relay to do.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const MAX_CANONICAL_HEADERS_BYTES: usize = 32 * 1024;
 const CONTROL_PREFIX: &str = "x-codex-relay-";
 
@@ -183,6 +198,11 @@ pub struct RelayState {
     auth: Arc<Mutex<AuthGate>>,
     forwarder: Arc<dyn Forwarder>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    max_body_bytes: usize,
+    /// Admission control. A permit is held for the whole request, including the
+    /// streamed response body, so the cap reflects concurrent *upstream* work
+    /// rather than just header parsing.
+    admission: Arc<Semaphore>,
 }
 
 impl RelayState {
@@ -191,7 +211,26 @@ impl RelayState {
             auth: Arc::new(Mutex::new(auth)),
             forwarder,
             now: Arc::new(current_unix_seconds),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            admission: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENCY)),
         }
+    }
+
+    /// Override the in-flight request cap.
+    #[must_use]
+    pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.admission = Arc::new(Semaphore::new(max_concurrency));
+        self
+    }
+
+    /// Override the request-body ceiling.
+    ///
+    /// Separated from the constructors so the deployment contract can be
+    /// tightened or loosened without a rebuild.
+    #[must_use]
+    pub fn with_max_body_bytes(mut self, max_body_bytes: usize) -> Self {
+        self.max_body_bytes = max_body_bytes;
+        self
     }
 
     pub fn with_clock(
@@ -203,6 +242,8 @@ impl RelayState {
             auth: Arc::new(Mutex::new(auth)),
             forwarder,
             now,
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            admission: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENCY)),
         }
     }
 }
@@ -219,9 +260,17 @@ async fn healthz() -> impl IntoResponse {
 }
 
 async fn forward(State(state): State<RelayState>, request: Request) -> Response {
+    // Refuse rather than queue: an unbounded wait here would just move the
+    // exhaustion from memory to latency, and the caller's own deadline would
+    // expire without ever learning the relay was saturated.
+    let Ok(_permit) = state.admission.clone().try_acquire_owned() else {
+        return reject(StatusCode::SERVICE_UNAVAILABLE, "relay_busy").into_response();
+    };
+
     let (parts, body) = request.into_parts();
-    let body = match to_bytes(body, MAX_BODY_BYTES + 1).await {
-        Ok(body) if body.len() <= MAX_BODY_BYTES => body,
+    let max_body_bytes = state.max_body_bytes;
+    let body = match to_bytes(body, max_body_bytes.saturating_add(1)).await {
+        Ok(body) if body.len() <= max_body_bytes => body,
         Ok(_) | Err(_) => {
             return reject(StatusCode::PAYLOAD_TOO_LARGE, "relay_body_too_large").into_response()
         }

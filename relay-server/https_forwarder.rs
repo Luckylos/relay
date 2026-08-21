@@ -53,6 +53,16 @@ pub const DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS: u64 = 120;
 /// while still being cut if the upstream goes permanently silent.
 pub const DEFAULT_STREAM_STALL_TIMEOUT_SECS: u64 = 120;
 
+/// Default budget for opening the TCP connection to the upstream.
+///
+/// Every other deadline here starts counting once a connection exists, so none
+/// of them can bound a target whose SYN is silently dropped. Target validation
+/// cannot prevent that either: a hostname may resolve to a public address that
+/// passes every SSRF check and then never answer. Without this, such a request
+/// is bounded only by the overall ceiling, pinning a task and a connection slot
+/// for ten minutes -- a cheap way to exhaust the relay.
+pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+
 /// Default ceiling on a single relayed response body.
 ///
 /// Streaming removes the natural memory bound that buffering provided, so an
@@ -107,6 +117,7 @@ pub fn build_egress_client(
         resolver,
         timeout_secs,
         DEFAULT_STREAM_STALL_TIMEOUT_SECS,
+        DEFAULT_CONNECT_TIMEOUT_SECS,
     )
 }
 
@@ -122,6 +133,7 @@ pub fn build_egress_client_with_timeouts(
     resolver: Arc<dyn Resolve>,
     timeout_secs: u64,
     stream_stall_timeout_secs: u64,
+    connect_timeout_secs: u64,
 ) -> Client {
     Client::builder()
         .use_preconfigured_tls(tls)
@@ -131,6 +143,10 @@ pub fn build_egress_client_with_timeouts(
         // Egress must not be diverted by HTTP(S)_PROXY in the unit environment.
         .no_proxy()
         .dns_resolver(Arc::new(SharedResolver(resolver)))
+        // Bounds only the connection setup. The deadlines below cannot cover it:
+        // they wait for a status line or the next chunk, neither of which exists
+        // until the socket is open.
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
         // Per-read budget: resets on every chunk, so a long SSE turn survives as
         // long as it keeps producing, while a permanently silent upstream is cut.
         .read_timeout(Duration::from_secs(stream_stall_timeout_secs))
@@ -158,12 +174,14 @@ impl Resolve for SharedResolver {
 pub fn build_production_client_with_stall(
     timeout_secs: u64,
     stream_stall_timeout_secs: u64,
+    connect_timeout_secs: u64,
 ) -> Client {
     build_egress_client_with_timeouts(
         crate::tls::build_tls_config(),
         Arc::new(crate::relay_resolver::SafeResolver::system()),
         timeout_secs,
         stream_stall_timeout_secs,
+        connect_timeout_secs,
     )
 }
 

@@ -1,8 +1,10 @@
 use std::net::SocketAddr;
 
 use codex_egress_relay::https_forwarder::{
-    DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS, DEFAULT_STREAM_STALL_TIMEOUT_SECS,
+    DEFAULT_CONNECT_TIMEOUT_SECS, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS,
+    DEFAULT_STREAM_STALL_TIMEOUT_SECS,
 };
+use codex_egress_relay::https_relay::{DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENCY};
 
 pub struct RelayConfig {
     pub listen_addr: SocketAddr,
@@ -15,6 +17,15 @@ pub struct RelayConfig {
     pub response_header_timeout_secs: u64,
     /// Budget for silence *between* response chunks once streaming has begun.
     pub stream_stall_timeout_secs: u64,
+    /// Budget for opening the upstream connection. No other deadline can cover
+    /// this: they all start counting once a socket exists.
+    pub connect_timeout_secs: u64,
+    /// Ceiling on an accepted request body.
+    pub max_body_bytes: usize,
+    /// Ceiling on a single relayed response body.
+    pub max_response_bytes: u64,
+    /// Cap on requests in flight, refused as `relay_busy` once reached.
+    pub max_concurrency: usize,
 }
 
 impl RelayConfig {
@@ -45,6 +56,28 @@ impl RelayConfig {
             "CODEX_RELAY_STREAM_STALL_TIMEOUT_SECS",
             DEFAULT_STREAM_STALL_TIMEOUT_SECS,
         )?;
+        let connect_timeout_secs = parse_timeout_secs(
+            "CODEX_RELAY_CONNECT_TIMEOUT_SECS",
+            DEFAULT_CONNECT_TIMEOUT_SECS,
+        )?;
+        // Same fail-closed parse as the deadlines: these are positive integers
+        // whose units are bytes rather than seconds.
+        let max_body_bytes = usize::try_from(parse_timeout_secs(
+            "CODEX_RELAY_MAX_BODY_BYTES",
+            DEFAULT_MAX_BODY_BYTES as u64,
+        )?)
+        .map_err(|_| {
+            "CODEX_RELAY_MAX_BODY_BYTES exceeds this platform's addressable size".to_owned()
+        })?;
+        let max_response_bytes =
+            parse_timeout_secs("CODEX_RELAY_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES)?;
+        let max_concurrency = usize::try_from(parse_timeout_secs(
+            "CODEX_RELAY_MAX_CONCURRENCY",
+            DEFAULT_MAX_CONCURRENCY as u64,
+        )?)
+        .map_err(|_| {
+            "CODEX_RELAY_MAX_CONCURRENCY exceeds this platform's addressable size".to_owned()
+        })?;
 
         Ok(Self {
             listen_addr,
@@ -54,6 +87,10 @@ impl RelayConfig {
             previous_key,
             response_header_timeout_secs,
             stream_stall_timeout_secs,
+            connect_timeout_secs,
+            max_body_bytes,
+            max_response_bytes,
+            max_concurrency,
         })
     }
 }
@@ -83,10 +120,11 @@ fn parse_clock_skew(value: Option<String>) -> Result<i64, String> {
     Ok(parsed)
 }
 
-/// Parse a positive timeout override, falling back to the compiled default.
+/// Parse a positive integer override, falling back to the compiled default.
 ///
-/// Fails closed on a malformed or zero value rather than silently substituting
-/// the default: a typo in a unit file must not quietly change egress deadlines.
+/// Used for both deadlines and byte ceilings. Fails closed on a malformed or
+/// zero value rather than silently substituting the default: a typo in a unit
+/// file must not quietly change an egress deadline or a resource limit.
 fn parse_timeout_secs(name: &str, default: u64) -> Result<u64, String> {
     match std::env::var(name) {
         Err(_) => Ok(default),
@@ -128,5 +166,35 @@ mod tests {
         assert!(validate_key_id("").is_err());
         assert!(validate_key_id("current\nkey").is_err());
         assert_eq!(validate_key_id("current").unwrap(), "current");
+    }
+
+    /// An unset or blank override falls back to the compiled default, but a
+    /// malformed or zero one fails closed.
+    ///
+    /// The distinction matters because these values are resource limits and
+    /// egress deadlines: silently substituting a default for `MAX_CONCURRENCY=0`
+    /// or a typo'd `CONNECT_TIMEOUT_SECS` would let a unit-file mistake change
+    /// the relay's admission and timeout behaviour with no signal at all.
+    #[test]
+    fn overrides_fall_back_when_absent_and_fail_closed_when_invalid() {
+        // Absent and empty both mean "operator expressed no opinion".
+        std::env::remove_var("CODEX_RELAY_TEST_KNOB");
+        assert_eq!(parse_timeout_secs("CODEX_RELAY_TEST_KNOB", 42).unwrap(), 42);
+        std::env::set_var("CODEX_RELAY_TEST_KNOB", "");
+        assert_eq!(parse_timeout_secs("CODEX_RELAY_TEST_KNOB", 42).unwrap(), 42);
+
+        // A real value wins over the default.
+        std::env::set_var("CODEX_RELAY_TEST_KNOB", "7");
+        assert_eq!(parse_timeout_secs("CODEX_RELAY_TEST_KNOB", 42).unwrap(), 7);
+
+        // Zero and non-numeric must fail, never degrade to the default.
+        for bad in ["0", "-1", "10s", "abc", "1.5"] {
+            std::env::set_var("CODEX_RELAY_TEST_KNOB", bad);
+            assert!(
+                parse_timeout_secs("CODEX_RELAY_TEST_KNOB", 42).is_err(),
+                "{bad:?} must be rejected rather than silently defaulted"
+            );
+        }
+        std::env::remove_var("CODEX_RELAY_TEST_KNOB");
     }
 }

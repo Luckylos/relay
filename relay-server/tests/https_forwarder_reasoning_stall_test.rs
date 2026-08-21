@@ -67,6 +67,9 @@ async fn reasoning_stall_past_the_old_thirty_second_limit_still_streams() {
         Arc::new(PinnedResolver(addr)),
         600,
         120,
+        // Connect is not under test here: the pinned loopback upstream accepts
+        // immediately, so this budget is deliberately generous.
+        30,
     );
     let forwarder =
         HttpsForwarder::new(client).with_response_header_timeout(Duration::from_secs(300));

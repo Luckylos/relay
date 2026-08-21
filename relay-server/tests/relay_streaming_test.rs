@@ -294,6 +294,8 @@ async fn times_out_on_response_headers_well_before_the_overall_ceiling() {
         Arc::new(common::PinnedResolver(upstream)),
         600,
         1,
+        // Connect: not under test, the pinned upstream accepts at once.
+        30,
     );
     let forwarder = HttpsForwarder::new(client);
 

@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use axum::{
@@ -45,9 +45,17 @@ impl Forwarder for RecordingForwarder {
 }
 
 fn signed_request() -> Request<Body> {
+    signed_request_with_nonce("AgICAgICAgICAgICAgICAg")
+}
+
+/// Same validly signed request, with a caller-chosen nonce.
+///
+/// Concurrency tests need several requests in flight at once; reusing one nonce
+/// would make the replay gate reject them, hiding whatever the concurrency gate
+/// does.
+fn signed_request_with_nonce(nonce: &str) -> Request<Body> {
     let method = "POST";
     let target = "https://api.example.com/v1/responses";
-    let nonce = "AgICAgICAgICAgICAgICAg";
     let headers = vec![["content-type".to_owned(), "application/json".to_owned()]];
     let body = br#"{"model":"fixture"}"#.to_vec();
     let input = RelaySigningInput {
@@ -308,6 +316,178 @@ async fn upstream_supplied_control_headers_are_overwritten_not_merged() {
             .count(),
         1
     );
+}
+
+/// The request-body ceiling must be operator-configurable, and must be enforced
+/// before the request is trusted enough to authenticate.
+///
+/// A hardcoded ceiling means the deployment contract cannot be tightened for a
+/// relay that fronts small requests, nor loosened for one that legitimately
+/// carries large ones -- the only lever is a rebuild. Enforcing it *before*
+/// signature verification also matters: HMAC over an oversized body is work an
+/// unauthenticated caller can force the relay to do.
+#[tokio::test]
+async fn the_request_body_ceiling_is_configurable() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut keys = KeyRing::default();
+    keys.insert("current", SECRET);
+    let app = build_app(
+        RelayState::with_clock(
+            AuthGate::new(keys, AuthPolicy::new(300)),
+            Arc::new(RecordingForwarder {
+                calls: calls.clone(),
+            }),
+            Arc::new(|| NOW),
+        )
+        // Far below the 10 MiB default, so the rejection can only come from the
+        // configured value being honoured.
+        .with_max_body_bytes(8),
+    );
+
+    let response = app.oneshot(signed_request()).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a body over the configured ceiling must be rejected"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "an oversized body must never reach the forwarder"
+    );
+}
+
+/// Concurrency saturation must be refused with `relay_busy`, not absorbed.
+///
+/// Nothing else in the relay bounds how many requests are in flight. Each one
+/// holds a task, a connection slot, and up to `max_response_bytes` of streaming
+/// buffer, and the deadlines are deliberately generous for SSE turns -- so a
+/// burst of slow upstreams grows until the process is out of memory or file
+/// descriptors, which fails as an unattributable crash instead of a documented
+/// `503`. The Worker already maps `relay_busy` to a client-visible 503; this is
+/// the missing producer of that code.
+// A multi-threaded runtime: this test needs one request genuinely parked inside
+// the forwarder while another is submitted. On the default single-threaded
+// runtime that overlap depends on yield ordering, which makes the test flaky
+// rather than wrong.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saturation_is_refused_as_relay_busy_rather_than_queued() {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let mut keys = KeyRing::default();
+    keys.insert("current", SECRET);
+    // A oneshot, not a `Notify`: it delivers even if the receiver has not begun
+    // awaiting yet, so the test cannot deadlock on task-scheduling order under
+    // the single-threaded test runtime.
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+
+    let app = build_app(
+        RelayState::with_clock(
+            AuthGate::new(keys, AuthPolicy::new(300)),
+            // A forwarder that parks until released: this is the shape of a slow
+            // upstream, which is what actually accumulates in production.
+            Arc::new(BlockingForwarder {
+                admitted: admitted.clone(),
+                released: Mutex::new(Some(released)),
+            }),
+            Arc::new(|| NOW),
+        )
+        .with_max_concurrency(1),
+    );
+
+    // Hold the single slot with an in-flight request.
+    let first = tokio::spawn({
+        let app = app.clone();
+        async move {
+            app.oneshot(signed_request_with_nonce("AQEBAQEBAQEBAQEBAQEBAQ"))
+                .await
+                .unwrap()
+        }
+    });
+    // Wait until it is genuinely inside the forwarder, so the second request
+    // cannot pass merely because the first had not started yet.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while admitted.load(Ordering::SeqCst) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first request never reached the forwarder"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // Bounded: an implementation that queues instead of refusing would park here
+    // forever. Failing on the timeout keeps that regression a fast, readable
+    // failure instead of a hung test run.
+    let rejected = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.clone()
+            .oneshot(signed_request_with_nonce("AgICAgICAgICAgICAgICAg")),
+    )
+    .await
+    .expect("a saturated relay must answer immediately, not queue behind the in-flight request")
+    .unwrap();
+
+    assert_eq!(
+        rejected.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a request beyond the concurrency limit must be refused, not queued"
+    );
+    assert_eq!(
+        rejected
+            .headers()
+            .get("x-codex-relay-error")
+            .and_then(|v| v.to_str().ok()),
+        Some("relay_busy"),
+        "the refusal must carry the machine code the Worker already maps to 503"
+    );
+    assert_eq!(
+        admitted.load(Ordering::SeqCst),
+        1,
+        "the refused request must never reach the forwarder"
+    );
+
+    // The slot must be returned once the in-flight request finishes.
+    release
+        .send(())
+        .expect("the parked forwarder must still be listening");
+    assert_eq!(first.await.unwrap().status(), StatusCode::ACCEPTED);
+    let after = app
+        .oneshot(signed_request_with_nonce("AwMDAwMDAwMDAwMDAwMDAw"))
+        .await
+        .unwrap();
+    assert_eq!(
+        after.status(),
+        StatusCode::ACCEPTED,
+        "capacity must be reusable: a permit leak would wedge the relay shut"
+    );
+}
+
+/// A forwarder that reports admission then parks until released.
+struct BlockingForwarder {
+    admitted: Arc<AtomicUsize>,
+    released: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl Forwarder for BlockingForwarder {
+    fn forward(
+        &self,
+        _request: ForwardRequest,
+    ) -> BoxFuture<'static, Result<ForwardResponse, ForwardError>> {
+        self.admitted.fetch_add(1, Ordering::SeqCst);
+        // Only the first admitted request parks. With a cap of 1 no second
+        // request can reach here, so taking the receiver is not a race.
+        let released = self.released.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(released) = released {
+                released.await.expect("release channel dropped");
+            }
+            Ok(ForwardResponse::from_bytes(
+                StatusCode::ACCEPTED,
+                HeaderMap::new(),
+                Bytes::from_static(b"forwarded"),
+            ))
+        })
+    }
 }
 
 fn app_with(calls: Arc<AtomicUsize>) -> axum::Router {

@@ -361,19 +361,36 @@ CODEX_PROXY_TUNNEL_TIMEOUT_MS
 ### 10.2 Rust HTTPS Relay
 
 ```text
-CODEX_HTTPS_RELAY_LISTEN           # 建议默认 127.0.0.1:18093
-CODEX_RELAY_CURRENT_KEY_ID         # 必需
-CODEX_RELAY_CURRENT_SECRET         # 必需
-CODEX_RELAY_PREVIOUS_KEY_ID        # 可选
-CODEX_RELAY_PREVIOUS_SECRET        # 可选
-CODEX_RELAY_MAX_BODY_BYTES         # 默认 10485760
-CODEX_RELAY_MAX_RESPONSE_BYTES     # 建议默认 67108864（非 SSE）
-CODEX_RELAY_MAX_CONCURRENCY        # 建议默认 64
-CODEX_RELAY_CLOCK_SKEW_SECS        # 默认 60
-CODEX_RELAY_CONNECT_TIMEOUT_SECS   # 默认 10
-CODEX_RELAY_HEADER_TIMEOUT_SECS    # 默认 120
-CODEX_RELAY_READ_IDLE_TIMEOUT_SECS # 默认 180
+CODEX_RELAY_LISTEN_ADDR                  # 必需，生产用 127.0.0.1:18093
+CODEX_RELAY_CURRENT_KEY_ID               # 必需
+CODEX_RELAY_CURRENT_SECRET               # 必需
+CODEX_RELAY_PREVIOUS_KEY_ID              # 可选，与 PREVIOUS_SECRET 必须成对
+CODEX_RELAY_PREVIOUS_SECRET              # 可选，与 PREVIOUS_KEY_ID 必须成对
+CODEX_RELAY_MAX_BODY_BYTES               # 默认 10485760
+CODEX_RELAY_MAX_RESPONSE_BYTES           # 默认 67108864（非 SSE）
+CODEX_RELAY_MAX_CONCURRENCY              # 默认 64
+CODEX_RELAY_CLOCK_SKEW_SECS              # 默认 60
+CODEX_RELAY_CONNECT_TIMEOUT_SECS         # 默认 10
+CODEX_RELAY_RESPONSE_HEADER_TIMEOUT_SECS # 默认 120
+CODEX_RELAY_STREAM_STALL_TIMEOUT_SECS    # 默认 120
 ```
+
+命名说明。三个变量名与本节早期草案不同，此处以实现与已部署 env 为准：
+
+- `CODEX_RELAY_LISTEN_ADDR`（草案曾写 `CODEX_HTTPS_RELAY_LISTEN`）。
+- `CODEX_RELAY_RESPONSE_HEADER_TIMEOUT_SECS`（草案曾写 `CODEX_RELAY_HEADER_TIMEOUT_SECS`）：
+  等待上游状态行的截止时间。
+- `CODEX_RELAY_STREAM_STALL_TIMEOUT_SECS`（草案曾写 `CODEX_RELAY_READ_IDLE_TIMEOUT_SECS`）：
+  流已开始后 chunk 之间允许的最大静默。此名称更准确，因为 reqwest 的
+  `read_timeout` 是**每次读**的预算而非整段空闲窗口，两者语义不同。
+
+`CONNECT`、`RESPONSE_HEADER`、`STREAM_STALL` 三个预算不可互相替代：前者只覆盖
+连接建立，后两者都要等 socket 存在之后才开始计时，因此握手挂死只能由
+`CONNECT_TIMEOUT` 兜住。
+
+除 key id 与 secret 外，所有值都按 fail-closed 解析：格式非法或为 `0` 时启动
+即失败，不静默回落到编译默认值 —— unit 文件里的笔误不得悄悄改变出口预算或
+资源上限。
 
 实际 secret 仅进入 `0600` env 文件；仓库只提交无值示例。
 

@@ -115,6 +115,7 @@ async fn survives_first_token_slower_than_the_header_deadline() {
         Arc::new(PinnedResolver(address)),
         600,
         30, // stall budget between reads: generous
+        30, // connect: not under test, the pinned upstream accepts at once
     );
     // Header deadline deliberately shorter than the upstream's think time.
     let forwarder =
@@ -148,6 +149,7 @@ async fn survives_quiet_gaps_between_sse_chunks() {
         Arc::new(PinnedResolver(address)),
         600,
         30, // gaps up to 30s are legitimate keep-alive silence
+        30, // connect: not under test, the pinned upstream accepts at once
     );
     // Tight header deadline must not leak into the body's chunk gaps.
     let forwarder =
@@ -186,7 +188,8 @@ async fn still_cuts_a_stream_that_stalls_past_the_budget() {
         client_tls_config(Some(trusted)),
         Arc::new(PinnedResolver(address)),
         600,
-        1, // stall budget: 1s
+        1,  // stall budget: 1s
+        30, // connect: not under test, the pinned upstream accepts at once
     );
     let forwarder =
         HttpsForwarder::new(client).with_response_header_timeout(Duration::from_secs(5));
