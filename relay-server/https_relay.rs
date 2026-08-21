@@ -20,11 +20,19 @@ use crate::relay_protocol::{
 /// Default cap on requests in flight.
 ///
 /// Nothing else bounds this. Each in-flight request holds a task, a connection
-/// slot, and up to `max_response_bytes` of streaming buffer, and the egress
-/// deadlines are deliberately generous for SSE turns -- so a burst of slow
-/// upstreams grows until the process runs out of memory or file descriptors.
-/// That failure is an unattributable crash; refusing at the door is a documented
-/// `503 relay_busy` the Worker already knows how to map.
+/// slot, and its fully buffered *request* body, and the egress deadlines are
+/// deliberately generous for SSE turns -- so a burst of slow upstreams grows
+/// until the process runs out of memory or file descriptors. That failure is an
+/// unattributable crash; refusing at the door is a documented `503 relay_busy`
+/// the Worker already knows how to map.
+///
+/// Responses are not part of that footprint: they are streamed chunk by chunk
+/// and `max_response_bytes` is enforced by a running counter, never buffered.
+/// So the memory ceiling is `max_concurrency * max_body_bytes`, which at the
+/// defaults is 640 MiB of worst-case request bodies -- only reachable if every
+/// concurrent caller simultaneously sends a 10 MiB body, two orders of
+/// magnitude above a real Codex or Claude turn. Lower this cap alongside
+/// `max_body_bytes`, not on its own, or the two stop describing the same budget.
 pub const DEFAULT_MAX_CONCURRENCY: usize = 64;
 
 /// Default ceiling on an accepted request body.
