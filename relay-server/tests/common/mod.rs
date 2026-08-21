@@ -107,6 +107,61 @@ pub async fn collect_body(
     Ok(Bytes::from(collected))
 }
 
+/// Build a validly signed request for the `/v1/forward` entrypoint.
+///
+/// The nonce is caller-chosen because concurrency tests need several requests
+/// in flight at once: reusing one nonce would trip the replay gate, so a test
+/// would read as "admission refused it" when in fact auth did.
+pub fn signed_relay_request(
+    nonce: &str,
+    secret: &[u8],
+    now: i64,
+) -> axum::http::Request<axum::body::Body> {
+    use codex_https_relay::relay_protocol::{
+        base64url_encode, canonicalize_headers, sha256_base64url, sign_relay_request,
+        RelaySigningInput,
+    };
+
+    let method = "POST";
+    let target = "https://api.example.com/v1/responses";
+    let headers = vec![["content-type".to_owned(), "application/json".to_owned()]];
+    let body = br#"{"model":"fixture"}"#.to_vec();
+    let signature = sign_relay_request(
+        &RelaySigningInput {
+            version: 1,
+            key_id: "current",
+            timestamp: now,
+            nonce,
+            method,
+            target,
+            headers: &headers,
+            body: &body,
+        },
+        secret,
+    )
+    .unwrap();
+    let header_block = canonicalize_headers(&headers).unwrap();
+
+    axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/forward")
+        .header("content-type", "application/octet-stream")
+        .header("x-codex-relay-version", "1")
+        .header("x-codex-relay-key-id", "current")
+        .header("x-codex-relay-timestamp", now.to_string())
+        .header("x-codex-relay-nonce", nonce)
+        .header("x-codex-relay-method", method)
+        .header("x-codex-relay-target", base64url_encode(target.as_bytes()))
+        .header("x-codex-relay-body-sha256", sha256_base64url(&body))
+        .header(
+            "x-codex-relay-headers",
+            base64url_encode(header_block.as_bytes()),
+        )
+        .header("x-codex-relay-signature", signature)
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// Encode one HTTP/1.1 chunked-transfer chunk.
 pub fn http_chunk(payload: &[u8]) -> Vec<u8> {
     let mut framed = format!("{:x}\r\n", payload.len()).into_bytes();

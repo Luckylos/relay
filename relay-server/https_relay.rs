@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{Request, State};
@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
+use futures_util::StreamExt;
 
 use crate::relay_auth::{AuthError, AuthGate, RelayAuthRequest};
 use crate::relay_protocol::{
@@ -202,6 +203,11 @@ pub struct RelayState {
     /// Admission control. A permit is held for the whole request, including the
     /// streamed response body, so the cap reflects concurrent *upstream* work
     /// rather than just header parsing.
+    ///
+    /// That second clause is not free: returning from the handler does not end
+    /// the request, so the permit has to be moved into the response body by
+    /// [`hold_permit_until_body_ends`]. Binding it to a handler-local instead
+    /// silently reduces this to a cap on header parsing.
     admission: Arc<Semaphore>,
 }
 
@@ -263,7 +269,7 @@ async fn forward(State(state): State<RelayState>, request: Request) -> Response 
     // Refuse rather than queue: an unbounded wait here would just move the
     // exhaustion from memory to latency, and the caller's own deadline would
     // expire without ever learning the relay was saturated.
-    let Ok(_permit) = state.admission.clone().try_acquire_owned() else {
+    let Ok(permit) = state.admission.clone().try_acquire_owned() else {
         return reject(StatusCode::SERVICE_UNAVAILABLE, "relay_busy").into_response();
     };
 
@@ -299,7 +305,22 @@ async fn forward(State(state): State<RelayState>, request: Request) -> Response 
     let forward_request = parsed.into_forward_request();
     let result = state.forwarder.forward(forward_request).await;
     match result {
-        Ok(response) => response.into_response(),
+        // The permit has to travel with the body. Everything below this line
+        // drops it at handler exit, which is correct: those are complete
+        // responses with no body still on the wire.
+        Ok(response) => {
+            let ForwardResponse {
+                status,
+                headers,
+                body,
+            } = response;
+            ForwardResponse {
+                status,
+                headers,
+                body: hold_permit_until_body_ends(body, permit),
+            }
+            .into_response()
+        }
         Err(ForwardError::InvalidTarget) => {
             reject(StatusCode::BAD_REQUEST, "relay_invalid_target").into_response()
         }
@@ -316,6 +337,28 @@ async fn forward(State(state): State<RelayState>, request: Request) -> Response 
             reject(StatusCode::BAD_GATEWAY, "relay_forward_unavailable").into_response()
         }
     }
+}
+
+/// Tie an admission permit to the lifetime of a streaming response body.
+///
+/// Returning from the handler is not the end of the request: axum hands back the
+/// status line and headers while an SSE turn keeps streaming for minutes, and
+/// hyper polls the body afterwards. A permit dropped at handler exit therefore
+/// caps *header parsing* rather than concurrent upstream work -- so streaming
+/// turns, the workload the cap exists for, would face no admission control at
+/// all.
+///
+/// The permit lives in the stream's state, so it is released both when the body
+/// completes and when the client disconnects and the body is dropped mid-flight.
+/// Neither path may leak it: a leaked permit wedges the relay shut for good.
+fn hold_permit_until_body_ends(body: ForwardStream, permit: OwnedSemaphorePermit) -> ForwardStream {
+    Box::pin(futures_util::stream::unfold(
+        (body, permit),
+        |(mut body, permit)| async move {
+            let chunk = body.next().await?;
+            Some((chunk, (body, permit)))
+        },
+    ))
 }
 
 fn auth_rejection(error: AuthError) -> Rejection {
