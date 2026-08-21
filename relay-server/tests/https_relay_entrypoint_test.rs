@@ -127,6 +127,189 @@ fn empty_header_request() -> Request<Body> {
         .unwrap()
 }
 
+/// Relay-generated errors must be attributable as such, and must not be
+/// confusable with a genuine upstream status of the same number.
+///
+/// Without a machine-readable marker the Worker can only guess from the status
+/// code, which is ambiguous in both directions: the relay's own 401/409/413 look
+/// like upstream rejections, and a real upstream 502 looks like a relay failure.
+/// Spec section 8 resolves this with `X-Codex-Relay-Result`.
+#[tokio::test]
+async fn relay_generated_errors_are_marked_as_relay_errors() {
+    // One case per class of relay-side failure, each reached by a different
+    // code path so the marker cannot be bolted onto a single branch.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut bad_sig = signed_request();
+    *bad_sig
+        .headers_mut()
+        .get_mut("x-codex-relay-signature")
+        .unwrap() = axum::http::HeaderValue::from_static("invalid");
+
+    let auth_error = app_with(calls.clone()).oneshot(bad_sig).await.unwrap();
+
+    assert_eq!(auth_error.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        auth_error
+            .headers()
+            .get("x-codex-relay-result")
+            .and_then(|v| v.to_str().ok()),
+        Some("error"),
+        "an auth failure is the relay's own verdict, not the upstream's"
+    );
+    assert_eq!(
+        auth_error
+            .headers()
+            .get("x-codex-relay-error")
+            .and_then(|v| v.to_str().ok()),
+        Some("relay_auth_error"),
+        "the machine code must travel in the header, not only in the JSON body"
+    );
+    assert!(
+        auth_error
+            .headers()
+            .get("x-codex-relay-request-id")
+            .is_some(),
+        "every relay response carries a correlation id"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    // A replay is a distinct machine code on a distinct status.
+    let app = app_with(calls.clone());
+    let _first = app.clone().oneshot(signed_request()).await.unwrap();
+    let replay = app.oneshot(signed_request()).await.unwrap();
+
+    assert_eq!(replay.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-codex-relay-result")
+            .and_then(|v| v.to_str().ok()),
+        Some("error")
+    );
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-codex-relay-error")
+            .and_then(|v| v.to_str().ok()),
+        Some("relay_replay")
+    );
+}
+
+/// A genuine upstream response -- including an upstream 4xx/5xx -- must be
+/// marked `upstream` so the Worker returns it verbatim instead of masking it
+/// behind a relay error.
+#[tokio::test]
+async fn upstream_responses_are_marked_as_upstream() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let response = app_with(calls.clone())
+        .oneshot(signed_request())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-codex-relay-result")
+            .and_then(|v| v.to_str().ok()),
+        Some("upstream"),
+        "a forwarded response belongs to the upstream"
+    );
+    assert!(
+        response.headers().get("x-codex-relay-error").is_none(),
+        "there is no error code when nothing failed"
+    );
+    assert!(
+        response.headers().get("x-codex-relay-request-id").is_some(),
+        "correlation id is present on success too"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// An upstream must not be able to forge its own attribution.
+///
+/// If upstream-supplied `x-codex-relay-*` headers survived, an upstream (or
+/// anything able to influence its response headers) could stamp
+/// `result: upstream` onto a reply, or overwrite the request id to poison
+/// correlation. The relay owns this namespace, so it overwrites rather than
+/// merges -- and the test proves the *upstream's* value is gone, not merely that
+/// some value is present.
+#[tokio::test]
+async fn upstream_supplied_control_headers_are_overwritten_not_merged() {
+    struct ForgingForwarder;
+
+    impl Forwarder for ForgingForwarder {
+        fn forward(
+            &self,
+            _request: ForwardRequest,
+        ) -> BoxFuture<'static, Result<ForwardResponse, ForwardError>> {
+            Box::pin(async move {
+                let mut headers = HeaderMap::new();
+                headers.insert("x-codex-relay-result", "error".parse().unwrap());
+                headers.insert("x-codex-relay-error", "relay_auth_error".parse().unwrap());
+                headers.insert(
+                    "x-codex-relay-request-id",
+                    "forged-by-upstream".parse().unwrap(),
+                );
+                Ok(ForwardResponse::from_bytes(
+                    StatusCode::OK,
+                    headers,
+                    Bytes::from_static(b"upstream body"),
+                ))
+            })
+        }
+    }
+
+    let mut keys = KeyRing::default();
+    keys.insert("current", SECRET);
+    let app = build_app(RelayState::with_clock(
+        AuthGate::new(keys, AuthPolicy::new(300)),
+        Arc::new(ForgingForwarder),
+        Arc::new(|| NOW),
+    ));
+
+    let response = app.oneshot(signed_request()).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-codex-relay-result")
+            .and_then(|v| v.to_str().ok()),
+        Some("upstream"),
+        "the relay's own verdict must win over the upstream's forged one"
+    );
+    assert!(
+        response.headers().get("x-codex-relay-error").is_none(),
+        "a forged error code must not survive on a successful forward"
+    );
+    assert_ne!(
+        response
+            .headers()
+            .get("x-codex-relay-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("forged-by-upstream"),
+        "the request id must be minted by the relay, never accepted from upstream"
+    );
+    // Exactly one value each: `insert` must have replaced, not appended.
+    assert_eq!(
+        response
+            .headers()
+            .get_all("x-codex-relay-result")
+            .iter()
+            .count(),
+        1
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get_all("x-codex-relay-request-id")
+            .iter()
+            .count(),
+        1
+    );
+}
+
 fn app_with(calls: Arc<AtomicUsize>) -> axum::Router {
     let mut keys = KeyRing::default();
     keys.insert("current", SECRET);

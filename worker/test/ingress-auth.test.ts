@@ -3,6 +3,7 @@ import worker, { type Env } from "../src/index";
 import { INGRESS_TOKEN_HEADER, MIN_TOKEN_LENGTH } from "../src/ingress-auth";
 import { RELAY_CONTROL_PREFIX, isStrippedRequestHeader } from "../src/headers";
 import { base64UrlDecode } from "../src/relay/protocol";
+import { asUpstream } from "./support/relay-stub";
 
 /** 43 base64url chars = 32 random bytes, the production minimum. */
 const TOKEN = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWZnaGk";
@@ -53,7 +54,7 @@ describe("Worker ingress authentication", () => {
   it("forwards a request that carries the correct token", async () => {
     const upstream = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
     try {
       const response = await worker.fetch(
         new Request("https://relay.example/api.example.com/v1/models", {
@@ -156,7 +157,7 @@ describe("Worker request header hygiene", () => {
   it("never forwards the ingress token to the relay or the upstream", async () => {
     const upstream = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
     try {
       await worker.fetch(
         new Request("https://relay.example/api.example.com/v1/models", {
@@ -181,7 +182,7 @@ describe("Worker request header hygiene", () => {
   it("strips platform source headers that would leak the client origin", async () => {
     const upstream = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
     try {
       await worker.fetch(
         new Request("https://relay.example/api.example.com/v1/models", {
@@ -228,7 +229,7 @@ describe("Worker request header hygiene", () => {
   it("signs business and identity headers without echoing them on the outer request", async () => {
     const upstream = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
     try {
       await worker.fetch(
         new Request("https://relay.example/api.example.com/v1/responses", {
@@ -269,7 +270,7 @@ describe("Worker request header hygiene", () => {
   it("keeps the existing client_metadata body projection", async () => {
     const upstream = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
     try {
       await worker.fetch(
         new Request("https://relay.example/api.example.com/v1/responses", {

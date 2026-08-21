@@ -1,5 +1,6 @@
 import type { TargetRequest } from "../target";
 import { isStrippedRequestHeader, projectResponseHeaders } from "../headers";
+import { attributeRelayResponse } from "./attribution";
 import { base64UrlEncode, canonicalizeHeaders, utf8 } from "./protocol";
 import { sha256Base64Url, signRelayRequest } from "./signing";
 
@@ -79,9 +80,7 @@ export async function sendViaRelay(request: RelayRequest): Promise<Response> {
     }),
   );
 
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: projectResponseHeaders(upstream.headers),
-  });
+  // Whose error is this? The status code cannot say, so attribution is decided
+  // from the relay's control headers before anything reaches the client.
+  return attributeRelayResponse(upstream, projectResponseHeaders);
 }

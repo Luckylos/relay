@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
 import { base64UrlDecode } from "../src/relay/protocol";
+import { asUpstream } from "./support/relay-stub";
 
 /** 43 base64url chars = 32 random bytes, the production minimum. */
 const TOKEN = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWZnaGk";
@@ -59,17 +60,19 @@ describe("Worker relay egress", () => {
   it("relays dynamic target, identity/body projection, and streams the response", async () => {
     const { body, releaseSecond } = sseBody();
     const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(body, {
-        status: 207,
-        statusText: "Multi-Status",
-        headers: {
-          "content-type": "text/event-stream",
-          "content-encoding": "gzip",
-          connection: "close",
-          "transfer-encoding": "chunked",
-          "x-upstream-marker": "yes",
-        },
-      }),
+      asUpstream(
+        new Response(body, {
+          status: 207,
+          statusText: "Multi-Status",
+          headers: {
+            "content-type": "text/event-stream",
+            "content-encoding": "gzip",
+            connection: "close",
+            "transfer-encoding": "chunked",
+            "x-upstream-marker": "yes",
+          },
+        }),
+      ),
     );
 
     try {
@@ -138,7 +141,7 @@ describe("Worker relay egress", () => {
   it("never leaks relay control headers from the client into the signed block", async () => {
     const upstream = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
 
     try {
       await worker.fetch(
@@ -287,7 +290,7 @@ describe("Worker relay egress", () => {
     // travel as a header or body value on the outbound relay request.
     const sending = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("ok", { status: 200 }));
+      .mockResolvedValue(asUpstream(new Response("ok", { status: 200 })));
     try {
       await worker.fetch(
         new Request("https://relay.example/example.com/v1/models", {

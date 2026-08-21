@@ -3,6 +3,7 @@ import worker, { type Env } from "../src/index";
 import { base64UrlDecode } from "../src/relay/protocol";
 import { RedirectError, rewriteLocation } from "../src/redirect";
 import { parseTarget } from "../src/target";
+import { asUpstream } from "./support/relay-stub";
 
 const WORKER_ORIGIN = "https://worker.example";
 
@@ -192,7 +193,7 @@ describe("upstream redirect rewriting", () => {
 describe("Worker redirect handling end to end", () => {
   /** Stubs the relay so the upstream's 3xx is what the Worker actually sees. */
   function relayReturning(status: number, headers: Record<string, string>) {
-    const fetchMock = vi.fn(async () => new Response("redirect body", { status, headers }));
+    const fetchMock = vi.fn(async () => asUpstream(new Response("redirect body", { status, headers })));
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;
   }
@@ -244,7 +245,7 @@ describe("Worker redirect handling end to end", () => {
     vi.unstubAllGlobals();
 
     // Typed parameter so the recorded call exposes the relay Request it received.
-    const second = vi.fn(async (_request: Request) => new Response("ok", { status: 200 }));
+    const second = vi.fn(async (_request: Request) => asUpstream(new Response("ok", { status: 200 })));
     vi.stubGlobal("fetch", second);
     const followed = await worker.fetch(
       new Request(location as string, { method: "GET", headers: AUTH }),

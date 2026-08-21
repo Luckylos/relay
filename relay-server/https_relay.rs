@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -110,6 +110,66 @@ pub trait Forwarder: Send + Sync + 'static {
         &self,
         request: ForwardRequest,
     ) -> BoxFuture<'static, Result<ForwardResponse, ForwardError>>;
+}
+
+/// Response control headers (spec section 8).
+///
+/// These carry error *attribution* out of band: the status code alone is
+/// ambiguous, because the relay's own 401/409/413 are indistinguishable from an
+/// upstream that rejected the request, and a real upstream 502 is
+/// indistinguishable from a relay that could not reach it. Without attribution
+/// the Worker must guess, and guessing wrong either leaks the relay's auth
+/// verdict to the client or masks a genuine upstream failure.
+const RESULT_HEADER: &str = "x-codex-relay-result";
+const ERROR_HEADER: &str = "x-codex-relay-error";
+const REQUEST_ID_HEADER: &str = "x-codex-relay-request-id";
+const RESULT_UPSTREAM: &str = "upstream";
+const RESULT_ERROR: &str = "error";
+
+/// Correlation id for one relay response.
+///
+/// Opaque and non-sequential: it exists to join a Worker log line to a relay log
+/// line, so it must not double as a request counter that reveals traffic volume.
+/// Reuses the `uuid` v4 CSPRNG already vendored for identity synthesis rather
+/// than adding a second source of randomness.
+fn new_request_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Stamp attribution onto an outgoing response.
+///
+/// Applied at the two -- and only two -- points where this relay produces a
+/// response, so attribution cannot be forgotten on a new error branch: every
+/// relay-side failure funnels through `Rejection`, and every forwarded reply
+/// through `ForwardResponse`.
+fn stamp_control_headers(response: &mut Response, result: &str, error_type: Option<&str>) {
+    let headers = response.headers_mut();
+
+    // Remove first, unconditionally. An upstream that sets `x-codex-relay-result:
+    // upstream` on its own reply would otherwise forge attribution and convince
+    // the Worker to pass a relay-shaped error through verbatim. The relay is the
+    // only party entitled to speak in this namespace.
+    headers.remove(RESULT_HEADER);
+    headers.remove(ERROR_HEADER);
+    headers.remove(REQUEST_ID_HEADER);
+
+    headers.insert(
+        HeaderName::from_static(RESULT_HEADER),
+        HeaderValue::from_static(if result == RESULT_UPSTREAM {
+            RESULT_UPSTREAM
+        } else {
+            RESULT_ERROR
+        }),
+    );
+    if let Some(error_type) = error_type {
+        // Machine codes are internal `&'static str` constants, never caller input.
+        if let Ok(value) = HeaderValue::from_str(error_type) {
+            headers.insert(HeaderName::from_static(ERROR_HEADER), value);
+        }
+    }
+    if let Ok(value) = HeaderValue::from_str(&new_request_id()) {
+        headers.insert(HeaderName::from_static(REQUEST_ID_HEADER), value);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -370,6 +430,10 @@ impl IntoResponse for ForwardResponse {
         let mut response = Response::new(Body::from_stream(self.body));
         *response.status_mut() = self.status;
         *response.headers_mut() = self.headers;
+        // Marked `upstream` even for an upstream 4xx/5xx: the status belongs to
+        // the upstream and the Worker must return it verbatim rather than
+        // rewriting it into a relay error.
+        stamp_control_headers(&mut response, RESULT_UPSTREAM, None);
         response
     }
 }
@@ -384,6 +448,7 @@ impl IntoResponse for Rejection {
         });
         let mut response = axum::Json(body).into_response();
         *response.status_mut() = self.status;
+        stamp_control_headers(&mut response, RESULT_ERROR, Some(self.error_type));
         response
     }
 }

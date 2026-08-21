@@ -2,7 +2,9 @@ export type RelayErrorType =
   | "invalid_target"
   | "request_too_large"
   | "upstream_error"
+  | "upstream_timeout"
   | "relay_unavailable"
+  | "relay_busy"
   | "unauthorized"
   | "ingress_misconfigured"
   | "invalid_upstream_redirect";

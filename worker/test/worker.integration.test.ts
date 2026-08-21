@@ -2,14 +2,17 @@ import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
 import { base64UrlDecode } from "../src/relay/protocol";
+import { asUpstream } from "./support/relay-stub";
 
 describe("Worker integration entrypoint", () => {
   it("runs the exported Worker handler through relay egress", async () => {
     const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, {
-        status: 201,
-        headers: { "x-integration": "yes" },
-      }),
+      asUpstream(
+        new Response(null, {
+          status: 201,
+          headers: { "x-integration": "yes" },
+        }),
+      ),
     );
 
     try {

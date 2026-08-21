@@ -88,6 +88,13 @@ export function projectResponseHeaders(incoming: Headers): Headers {
     ) {
       continue;
     }
+    // Relay control headers are an internal Worker<->relay channel, consumed by
+    // the attribution step. Forwarding one would tell the client a relay exists
+    // and hand it a correlation id it cannot use. Matched by prefix, not by a
+    // fixed list, so a future control header cannot leak by being forgotten here.
+    if (name.toLowerCase().startsWith(RELAY_CONTROL_PREFIX)) {
+      continue;
+    }
     output.set(name, value);
   }
   return output;
