@@ -7,12 +7,7 @@ import { asUpstream } from "./support/relay-stub";
 
 const WORKER_ORIGIN = "https://worker.example";
 
-/** 43 base64url chars = 32 random bytes, the production minimum. */
-const TOKEN = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWZnaGk";
-const AUTH = { "x-codex-relay-token": TOKEN } as const;
-
 const ENV: Env = {
-  INGRESS_AUTH_TOKEN: TOKEN,
   EGRESS_RELAY_URL: "https://relay.internal.example/v1/forward",
   EGRESS_RELAY_KEY_ID: "key-1",
   EGRESS_RELAY_SECRET: "relay-test-secret",
@@ -207,7 +202,7 @@ describe("Worker redirect handling end to end", () => {
     const response = await worker.fetch(
       new Request("https://worker.example/api.example.com/v1/responses", {
         method: "POST",
-        headers: { ...AUTH, "content-type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: "{}",
       }),
       ENV,
@@ -234,7 +229,6 @@ describe("Worker redirect handling end to end", () => {
     const initial = await worker.fetch(
       new Request("https://worker.example/api.example.com/v1/responses", {
         method: "GET",
-        headers: AUTH,
       }),
       ENV,
       context(),
@@ -248,7 +242,7 @@ describe("Worker redirect handling end to end", () => {
     const second = vi.fn(async (_request: Request) => asUpstream(new Response("ok", { status: 200 })));
     vi.stubGlobal("fetch", second);
     const followed = await worker.fetch(
-      new Request(location as string, { method: "GET", headers: AUTH }),
+      new Request(location as string, { method: "GET" }),
       ENV,
       context(),
     );
@@ -277,7 +271,6 @@ describe("Worker redirect handling end to end", () => {
       const response = await worker.fetch(
         new Request("https://worker.example/api.example.com/v1/responses", {
           method: "GET",
-          headers: AUTH,
         }),
         ENV,
         context(),
@@ -303,7 +296,6 @@ describe("Worker redirect handling end to end", () => {
     const response = await worker.fetch(
       new Request("https://worker.example/api.example.com/v1/responses", {
         method: "GET",
-        headers: AUTH,
       }),
       ENV,
       context(),

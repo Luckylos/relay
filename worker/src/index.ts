@@ -1,13 +1,12 @@
 import { readIdentityConfig, type IdentityEnv, type IdentityConfig } from "./config";
 import { errorResponse } from "./errors";
 import { projectIdentity, resolveIdentity } from "./identity";
-import { authenticateIngress, type IngressEnv } from "./ingress-auth";
 import { RedirectError, rewriteLocation } from "./redirect";
 import { RelayConfigError, readRelayConfig, type RelayEnv } from "./relay/config";
 import { sendViaRelay } from "./relay/client";
-import { parseTarget, TargetError } from "./target";
+import { parseTarget, TargetError, type TargetEnv } from "./target";
 
-export interface Env extends IdentityEnv, RelayEnv, IngressEnv {
+export interface Env extends IdentityEnv, RelayEnv, TargetEnv {
   CODEX_PROXY_MAX_BODY_BYTES?: string;
 }
 
@@ -36,25 +35,17 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 
 const worker = {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    // First gate, before target parsing, body reads or any egress: an
-    // unauthenticated caller must not be able to probe target validity, consume
-    // relay quota or learn anything about relay configuration.
-    const auth = authenticateIngress(request.headers, env);
-    if (auth.outcome === "misconfigured") {
-      return errorResponse(
-        502,
-        "ingress authentication is not configured",
-        "ingress_misconfigured",
-      );
-    }
-    if (auth.outcome === "unauthorized") {
-      // Generic body: it must not reveal whether a token was presented.
-      return errorResponse(401, "unauthorized", "unauthorized");
-    }
-
+    // There is no ingress gate: this Worker is an open endpoint by design, so any
+    // client that points its base URL here works with no custom headers and no
+    // Worker-specific credential. Upstream authorization stays the caller's own
+    // `Authorization` header, which is forwarded untouched.
+    //
+    // Client-supplied `x-codex-relay-*` headers are still stripped before egress
+    // (see headers.ts): being open to callers must not let a caller forge the
+    // Worker->relay envelope.
     let target;
     try {
-      target = parseTarget(request);
+      target = parseTarget(request, env);
     } catch (error) {
       if (error instanceof TargetError) {
         return errorResponse(400, "invalid target", "invalid_target");
@@ -131,7 +122,7 @@ const worker = {
 
     let rewritten: string;
     try {
-      rewritten = rewriteLocation(location, target, new URL(request.url));
+      rewritten = rewriteLocation(location, target, new URL(request.url), env);
     } catch (error) {
       if (error instanceof RedirectError) {
         // Fail closed: never hand the client a Location that would take it off the

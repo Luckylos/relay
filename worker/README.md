@@ -36,35 +36,46 @@ disagrees with the parsed hostname. IP literals and loopback names are refused
 here as well as by the relay's post-DNS SSRF policy — the edge check keeps
 requests that must always fail from consuming relay capacity.
 
-There is no hostname allowlist: any public HTTPS hostname is reachable, and the
-relay's DNS-time address policy is what prevents private-range egress.
+Which upstreams are reachable is governed by the optional
+`ALLOWED_UPSTREAM_HOSTS` variable (see Configuration). When it is unset, any
+public HTTPS hostname is reachable and the relay's DNS-time address policy is
+the only thing preventing private-range egress.
 
 ## Client authentication
 
-Clients present a bearer token in `X-Codex-Relay-Token`, checked against the
-`INGRESS_AUTH_TOKEN` secret before anything else — before target parsing, before
-the body is read, before any egress. So an unauthenticated caller cannot probe
-target validity, consume relay capacity, or learn whether the relay is
-configured.
+There is none. The Worker is an open endpoint by design: point any
+OpenAI-compatible client's base URL at it and it works, with no Worker-specific
+credential and no custom headers.
 
 ```bash
 curl --request POST \
   --url 'https://worker.example.com/api.openai.com/v1/responses?stream=true' \
-  --header 'X-Codex-Relay-Token: ***' \
   --header 'Authorization: Bearer ***' \
   --header 'Content-Type: application/json' \
   --data '{"model":"gpt-5.6","stream":true}'
 ```
 
+The only credential involved is the caller's own upstream key in
+`Authorization`, which is forwarded untouched. The Worker holds no shared
+upstream key, so a caller can never spend someone else's quota.
+
+Two properties are deliberately retained despite the open ingress:
+
+- Every client-supplied `x-codex-relay-*` request header is stripped before
+  egress (`src/headers.ts`), so an open caller still cannot forge the
+  Worker→relay envelope or its result attribution.
+- `ALLOWED_UPSTREAM_HOSTS` bounds *what* an open caller can reach. Being open to
+  callers is acceptable; being an open proxy to arbitrary hosts is not, because
+  the traffic egresses from the relay's VPS address and abuse is attributed
+  there.
+
 | Condition | Status | `type` |
 | --- | --- | --- |
-| Missing or wrong client token | `401` | `unauthorized` |
-| `INGRESS_AUTH_TOKEN` unset or under 43 chars | `502` | `ingress_misconfigured` |
+| Target host not in `ALLOWED_UPSTREAM_HOSTS` | `400` | `invalid_target` |
+| Upstream redirect to a non-allowed host | `502` | `invalid_upstream_redirect` |
 
-Comparison is constant-time, and a missing token is indistinguishable from a
-wrong one in the response. Tokens must be at least 32 random bytes (43 unpadded
-base64url characters); the Worker refuses to serve traffic behind a weaker one
-rather than accepting a guessable secret.
+A rejected target fails closed before the body is read and before any egress, so
+a disallowed request consumes no relay capacity.
 
 ## Relay protocol
 
@@ -109,8 +120,9 @@ identity headers are signed and reach the upstream. Three groups never do:
   `cdn-loop`, `forwarded`, `x-forwarded-*`, `true-client-ip`, `x-real-ip`, …),
   which would hand the upstream the real client IP and defeat the relay;
 - anything under the `x-codex-relay-` prefix, so a client cannot forge an
-  envelope field. `X-Codex-Relay-Token` is stripped by this rule too — the
-  ingress token is consumed at the Worker and never travels onward.
+  envelope field or its result attribution. With no ingress credential in front
+  of the Worker, this prefix rule is the only thing standing between an open
+  caller and a forged relay envelope.
 
 ## Redirects
 
@@ -157,8 +169,6 @@ The Worker does not send the Rust-only `version` or `conversation_id` fields.
 | Invalid target path | `400` | `invalid_target` |
 | Unreadable request body | `400` | `upstream_error` |
 | Body over the limit | `413` | `request_too_large` |
-| Client token missing or wrong | `401` | `unauthorized` |
-| Ingress auth misconfigured | `502` | `ingress_misconfigured` |
 | Relay config missing or malformed | `502` | `relay_unavailable` |
 | Relay call failed | `502` | `relay_unavailable` |
 | Unsafe upstream `Location` | `502` | `invalid_upstream_redirect` |
@@ -185,23 +195,42 @@ established by the relay.
 Required:
 
 ```text
-INGRESS_AUTH_TOKEN    Worker secret; >= 43 base64url chars
 EGRESS_RELAY_URL      absolute https:// URL ending in /v1/forward
 EGRESS_RELAY_KEY_ID   key id the relay resolves to a secret
 EGRESS_RELAY_SECRET   Worker secret; HMAC signing key
 ```
 
-`INGRESS_AUTH_TOKEN` and `EGRESS_RELAY_SECRET` are deliberately separate: one
-authenticates the client to the Worker, the other authenticates the Worker to
-the relay. Sharing one value would let any authorized client forge signed relay
-envelopes.
+Optional:
+
+```text
+ALLOWED_UPSTREAM_HOSTS  comma-separated upstream hostname allowlist
+```
+
+`EGRESS_RELAY_SECRET` authenticates the Worker to the relay. It is never
+accepted from, nor exposed to, a client: the `x-codex-relay-*` request-header
+strip exists so an open caller cannot forge a signed envelope with it.
+
+`ALLOWED_UPSTREAM_HOSTS` is matched case-insensitively against the exact
+hostname; a leading dot (`.openai.com`) also matches subdomains, and the parent
+domain itself. There are no wildcards, and a suffix entry cannot match a sibling
+domain (`.openai.com` does not match `evil-openai.com`). The same rule is applied
+to upstream redirects, so a redirect cannot reach a host a client could not have
+requested directly.
+
+```text
+ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"
+```
+
+Leaving it unset or empty preserves the any-public-host behaviour. That is the
+documented rollback, but for a deployment shared with other people it should be
+set: without it, this Worker is an open proxy to any public HTTPS host, egressing
+from the relay's address.
 
 `wrangler.toml` holds only the non-secret URL and key id, so a deploy cannot
-silently lose them. Both secrets are set out of band and appear in no committed
-file:
+silently lose them. The signing secret is set out of band and appears in no
+committed file:
 
 ```bash
-wrangler secret put INGRESS_AUTH_TOKEN
 wrangler secret put EGRESS_RELAY_SECRET
 ```
 
@@ -245,9 +274,10 @@ Verified:
 Not yet verified:
 
 - end-to-end request from a deployed Worker through a deployed relay to a real
-  upstream API, including SSE;
-- whether the real Codex client can inject `X-Codex-Relay-Token`. If it cannot,
-  a controlled local adapter is required before this is exposed publicly.
+  upstream API, including SSE, driven by a stock client with no custom headers.
+
+A local adapter is no longer required: it existed only to inject the retired
+`X-Codex-Relay-Token`, and clients now need nothing beyond a base URL.
 
 ## History
 

@@ -19,10 +19,9 @@ describe("Worker integration entrypoint", () => {
       const workerExports = exports as unknown as {
         default: { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
       };
-      const bindingsEnv = env as unknown as { INGRESS_AUTH_TOKEN: string };
+      // No credential: real bindings must relay an unadorned client request.
       const response = await workerExports.default.fetch(
         "https://relay.example/second.example/v1/models?limit=1",
-        { headers: { "x-codex-relay-token": bindingsEnv.INGRESS_AUTH_TOKEN } },
       );
 
       expect(response.status).toBe(201);

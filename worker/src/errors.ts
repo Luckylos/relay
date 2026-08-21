@@ -5,8 +5,6 @@ export type RelayErrorType =
   | "upstream_timeout"
   | "relay_unavailable"
   | "relay_busy"
-  | "unauthorized"
-  | "ingress_misconfigured"
   | "invalid_upstream_redirect";
 
 export function errorResponse(

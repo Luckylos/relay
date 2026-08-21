@@ -3,19 +3,14 @@ import worker, { type Env } from "../src/index";
 import { base64UrlDecode } from "../src/relay/protocol";
 import { asUpstream } from "./support/relay-stub";
 
-/** 43 base64url chars = 32 random bytes, the production minimum. */
-const TOKEN = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTBhYmNkZWZnaGk";
 
 const ENV: Env = {
   CODEX_PROXY_INSTALLATION_ID: "11111111-1111-1111-1111-111111111111",
   CODEX_PROXY_MAX_BODY_BYTES: "1024",
-  INGRESS_AUTH_TOKEN: TOKEN,
   EGRESS_RELAY_URL: "https://relay.internal.example/v1/forward",
   EGRESS_RELAY_KEY_ID: "key-1",
   EGRESS_RELAY_SECRET: "relay-test-secret",
 };
-
-const AUTH = { "x-codex-relay-token": TOKEN } as const;
 
 function context(): ExecutionContext {
   return {
@@ -81,7 +76,6 @@ describe("Worker relay egress", () => {
         {
           method: "POST",
           headers: {
-            "x-codex-relay-token": TOKEN,
             authorization: "Bearer client-token",
             "content-type": "application/json",
           },
@@ -147,7 +141,8 @@ describe("Worker relay egress", () => {
       await worker.fetch(
         new Request("https://relay.example/example.com/v1/models", {
           headers: {
-            "x-codex-relay-token": TOKEN,
+            // The retired ingress header is still stripped by the prefix rule.
+            "x-codex-relay-token": "retired-header-value",
             // A client must not be able to forge envelope fields or pin its own
             // signature by sending control headers.
             "x-codex-relay-key-id": "forged",
@@ -175,7 +170,7 @@ describe("Worker relay egress", () => {
     const upstream = vi.spyOn(globalThis, "fetch");
     try {
       const response = await worker.fetch(
-        new Request("https://relay.example/not a hostname/path", { headers: AUTH }),
+        new Request("https://relay.example/not a hostname/path"),
         ENV,
         context(),
       );
@@ -196,7 +191,6 @@ describe("Worker relay egress", () => {
       const response = await worker.fetch(
         new Request("https://relay.example/example.com/v1/responses", {
           method: "POST",
-          headers: AUTH,
           body: "1234567890123456789012345678901234567890",
         }),
         { ...ENV, CODEX_PROXY_MAX_BODY_BYTES: "32" },
@@ -224,7 +218,7 @@ describe("Worker relay egress", () => {
         "not-a-url",
       ]) {
         const response = await worker.fetch(
-          new Request("https://relay.example/example.com/v1/models", { headers: AUTH }),
+          new Request("https://relay.example/example.com/v1/models"),
           { ...ENV, EGRESS_RELAY_URL: url },
           context(),
         );
@@ -246,7 +240,7 @@ describe("Worker relay egress", () => {
       .mockRejectedValue(new Error("secret relay hostname detail"));
     try {
       const response = await worker.fetch(
-        new Request("https://relay.example/example.com/v1/models", { headers: AUTH }),
+        new Request("https://relay.example/example.com/v1/models"),
         ENV,
         context(),
       );
@@ -276,7 +270,7 @@ describe("Worker relay egress", () => {
       .mockRejectedValue(new Error(`relay rejected key ${SECRET}`));
     try {
       const response = await worker.fetch(
-        new Request("https://relay.example/example.com/v1/models", { headers: AUTH }),
+        new Request("https://relay.example/example.com/v1/models"),
         env,
         context(),
       );
@@ -295,7 +289,7 @@ describe("Worker relay egress", () => {
       await worker.fetch(
         new Request("https://relay.example/example.com/v1/models", {
           method: "POST",
-          headers: { ...AUTH, "content-type": "application/json" },
+          headers: { "content-type": "application/json" },
           body: '{"model":"probe"}',
         }),
         env,

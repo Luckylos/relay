@@ -101,20 +101,39 @@ https://worker.example/api.openai.com/v1/responses?stream=true
 - 支持上游方法：`GET`、`HEAD`、`POST`、`PUT`、`PATCH`、`DELETE`、`OPTIONS`。
 - `CONNECT`、`TRACE` 及其他未支持方法返回 `405`。
 
-### 4.2 客户端入口鉴权
+### 4.2 客户端入口：开放，无客户端凭据
 
-生产入口要求：
+**修订（2026-08-21）**：原设计要求客户端携带 `X-Codex-Relay-Token`（Worker secret
+`INGRESS_AUTH_TOKEN`）。该要求已移除，`src/ingress-auth.ts` 已删除。
+
+现行入口契约：
+
+- 客户端只需把 `base_url` 指向 Worker，不需要任何自定义 header、不需要本地适配层。
+- 客户端自带上游 `Authorization`，Worker 原样转发；Worker 不内置共享上游 key，
+  因此调用者只能消耗自己的额度。
+- 取消入口鉴权后，`x-codex-relay-*` 前缀剥离规则（`worker/src/headers.ts`）成为
+  阻止调用者伪造 Worker→Relay 信封的**唯一**机制，必须保留。
+- 原「客户端无法注入该 header 就必须先加本地适配层」的约束随之作废：适配层的唯一
+  存在理由就是补这个 token。
+
+代价与补偿：开放入口意味着放弃「未鉴权调用者无法探测目标有效性 / 消耗 Relay 容量 /
+探知 Relay 配置」这一层保护。补偿手段是 4.2.1 的上游 allowlist——开放给调用者可以
+接受，开放成任意目标的通用代理不可接受，因为出口是 Relay 所在 VPS 地址，滥用后果
+归属该地址。
+
+### 4.2.1 上游 allowlist（可选变量）
 
 ```text
-X-Codex-Relay-Token: <opaque random token>
+ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"
 ```
 
-- Worker Secret：`INGRESS_AUTH_TOKEN`。
-- token 至少 32 个随机字节，以 base64url 或等价无歧义格式保存。
-- Worker 使用恒定时间比较。
-- 缺失或错误返回 `401`，通用错误体，不说明 token 是否存在。
-- 此 header 在 Worker 内消费，绝不进入身份投影、canonical header block、Relay 请求日志或上游请求。
-- 若实际客户端不能配置该 header，则不得将 Worker 暴露公网；需先增加受控本地适配层。这不是允许使用 URL/query secret 的理由。
+- 普通变量，非 secret。
+- 大小写不敏感，精确匹配 hostname；前导点（`.openai.com`）额外匹配子域及父域本身。
+- 无通配符；后缀条目不会匹配兄弟域（`.openai.com` 不匹配 `evil-openai.com`）。
+- 命中失败在读取 body 和任何 egress 之前返回 `400 invalid_target`，fail-closed。
+- 同一规则应用于上游 redirect 重写：redirect 不得抵达客户端本来无法直接请求的主机。
+- 未设置或为空 = 保持任意公网 HTTPS 主机的原行为。这是回滚路径，但多人共享部署时
+  应当实际配置，否则 Worker 就是公开通用代理。
 
 ### 4.3 请求头投影
 
@@ -341,13 +360,15 @@ Worker 对 `Location`：
 ### 10.1 Worker
 
 ```text
-INGRESS_AUTH_TOKEN                 # secret，必需
 EGRESS_RELAY_URL                   # 变量，必需，固定 https://.../v1/forward
 EGRESS_RELAY_KEY_ID                # 变量或 secret，必需
 EGRESS_RELAY_SECRET                # secret，必需
+ALLOWED_UPSTREAM_HOSTS             # 变量，可选；未设=任意公网 HTTPS 主机
 CODEX_PROXY_MAX_BODY_BYTES         # 默认 10485760
 CODEX_RELAY_HEADER_TIMEOUT_MS      # 默认 120000
 ```
+
+`INGRESS_AUTH_TOKEN` 已于 2026-08-21 移除，见 4.2。
 
 任一必需项缺失时目标请求返回 fail-closed 配置错误；不得调用 direct `fetch(target)`。
 
@@ -467,13 +488,13 @@ Worker 不向上游转发访客来源 IP 头；Relay 只从已签名 canonical h
 | 事项 | v1 决策 |
 |---|---|
 | Relay 类型 | 应用层 HTTPS request relay |
-| 动态目标 | 任意公网 HTTPS hostname，端口 443 |
+| 动态目标 | 公网 HTTPS hostname，端口 443；可选 `ALLOWED_UPSTREAM_HOSTS` 收窄 |
 | 请求 body | 有界缓冲，默认 10 MiB |
 | 响应 body | 流式，SSE 增量 |
 | Identity 所有者 | Worker |
 | TLS/H2 所有者 | Rust Relay |
 | Worker→Relay auth | HMAC-SHA256 + timestamp + nonce + canonical header block/body digest |
-| 客户端→Worker auth | 独立 `X-Codex-Relay-Token` |
+| 客户端→Worker auth | 无（开放入口）；由上游 allowlist 限制可达目标 |
 | SSRF | DNS 后全地址校验并将已验证地址交给 connector |
 | Redirect | Relay 不跟随；Worker 重写回自身 |
 | 失败策略 | 全链 fail-closed，无 direct fallback |

@@ -68,10 +68,10 @@ const STRIPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set<string>([
  * The relay-control prefix is matched rather than listed so that adding an
  * envelope field later cannot accidentally open a forgery path.
  *
- * The ingress token header (`x-codex-relay-token`) is covered by that same
- * prefix, so it is deliberately not listed separately: the prefix rule is the
- * single mechanism keeping every `x-codex-relay-*` header — envelope fields and
- * the ingress credential alike — out of the signed block and off the wire.
+ * This matters more, not less, now that the Worker has no ingress credential:
+ * the prefix rule is the single mechanism keeping every client-supplied
+ * `x-codex-relay-*` header out of the signed block and off the wire, so an open
+ * caller cannot forge an envelope field or its result attribution.
  */
 export function isStrippedRequestHeader(name: string): boolean {
   const lower = name.toLowerCase();

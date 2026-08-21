@@ -1,4 +1,10 @@
-import { isValidHostname, parseTarget, type TargetRequest } from "./target";
+import {
+  isAllowedUpstreamHost,
+  isValidHostname,
+  parseTarget,
+  type TargetEnv,
+  type TargetRequest,
+} from "./target";
 
 /**
  * Upstream redirect rewriting.
@@ -37,6 +43,8 @@ const FORBIDDEN_CHARACTERS = /[\r\n\t]/;
  * @param target The target the upstream request was sent to; used as the RFC 3986
  *   base so relative redirects resolve against the upstream, not the Worker.
  * @param workerUrl The inbound request URL, providing the origin to rewrite onto.
+ * @param env Target configuration, so the upstream allowlist applies to
+ *   redirects too.
  * @throws {RedirectError} When the redirect could not be expressed as a valid
  *   dynamic target, i.e. anything the client could not have requested directly.
  */
@@ -44,6 +52,7 @@ export function rewriteLocation(
   location: string,
   target: TargetRequest,
   workerUrl: URL,
+  env: TargetEnv = {},
 ): string {
   if (FORBIDDEN_CHARACTERS.test(location)) {
     throw new RedirectError("redirect contains forbidden characters");
@@ -82,6 +91,12 @@ export function rewriteLocation(
   if (!isValidHostname(resolved.hostname)) {
     throw new RedirectError("redirect hostname is not a valid target");
   }
+  // A redirect must not widen the target space: without this an upstream could
+  // bounce a client to a host the allowlist forbids, and the Worker would
+  // happily relay the follow-up request to it.
+  if (!isAllowedUpstreamHost(resolved.hostname, env)) {
+    throw new RedirectError("redirect hostname is not an allowed target");
+  }
 
   // Built from the parsed parts rather than by string concatenation so the
   // hostname cannot inject extra path segments. `pathname` and `search` are kept
@@ -102,7 +117,7 @@ export function rewriteLocation(
   // between the two rule sets into a fail-closed error rather than a redirect the
   // Worker would reject on the next hop.
   try {
-    parseTarget(new Request(rewritten.toString()));
+    parseTarget(new Request(rewritten.toString()), env);
   } catch {
     throw new RedirectError("rewritten redirect is not a valid target");
   }
