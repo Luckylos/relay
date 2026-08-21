@@ -4,10 +4,6 @@ version = "0.2.0"
 edition = "2021"
 
 [[bin]]
-name = "codex-egress-relay"
-path = "main.rs"
-
-[[bin]]
 name = "codex-https-relay"
 path = "https_relay_main.rs"
 

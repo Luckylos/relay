@@ -91,6 +91,6 @@ Python probe folded all Unicode whitespace via `str.split()`.
 ## Deployment
 
 The two artifacts deploy independently and the repository layout does not change
-their paths. `relay-server/systemd/*.service` intentionally records the live
-deployment paths (`/opt/codex-egress-relay`, `/opt/codex-https-relay`), which are
-not this repository's location.
+their paths. `relay-server/systemd/codex-https-relay.service` intentionally
+records the live deployment path (`/opt/codex-https-relay`), which is not this
+repository's location.
