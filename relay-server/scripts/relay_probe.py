@@ -17,24 +17,47 @@ import time
 import urllib.error
 import urllib.request
 
-FIXTURE = pathlib.Path(
-    "/opt/codex-egress-relay/tests/fixtures/relay-protocol-v1.json"
-)
+# This subtree's own fixture, so the probe works when relay-server/ is used
+# standalone. protocol/conformance.py enforces byte-identity with the Worker's
+# copy and with protocol/relay-protocol-v1.json.
+FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "tests/fixtures/relay-protocol-v1.json"
 
 
 def b64u(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+def normalize_header_value(value):
+    """Spec §5.2: collapse runs of SPACE/TAB only and strip the ends.
+
+    `" ".join(value.split())` would also collapse NBSP, form feed and every
+    other Unicode space, disagreeing with relay_protocol.rs and protocol.ts.
+    """
+    out = []
+    pending = False
+    for character in value:
+        if character in " \t":
+            if out:
+                pending = True
+            continue
+        if pending:
+            out.append(" ")
+            pending = False
+        out.append(character)
+    return "".join(out)
+
+
 def canonical_headers(headers):
     lines = []
-    for name, value in sorted((n.lower(), " ".join(v.split())) for n, v in headers):
+    for name, value in sorted(
+        (n.lower(), normalize_header_value(v)) for n, v in headers
+    ):
         lines.append(f"{name}:{value}\n")
     return "".join(lines)
 
 
 def canonical_request(key_id, timestamp, nonce, method, target, digest, block):
-    """Field order/encoding frozen by tests/fixtures/relay-protocol-v1.json:
+    """Field order/encoding frozen by protocol/relay-protocol-v1.json:
     literal version prefix, then base64url target and header block."""
     return "\n".join([
         "codex-relay-v1",

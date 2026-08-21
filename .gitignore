@@ -1,4 +1,11 @@
-# Toolchain outputs live inside each subtree; see relay-server/.gitignore and
-# worker/.gitignore. Only genuinely repo-wide artifacts belong here.
-*.bak
-*.bak-*
+# Rust
+/relay-server/target/
+
+# Node
+/worker/node_modules/
+/worker/dist/
+/worker/.wrangler/
+
+# Python
+__pycache__/
+*.pyc

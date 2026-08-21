@@ -75,7 +75,10 @@ export function canonicalizeHeaders(
     return [name, normalizeHeaderValue(rawValue)] as const;
   });
 
-  normalized.sort(([left], [right]) => left.localeCompare(right));
+  // Spec §5.2 requires ASCII ascending order. localeCompare() is
+  // locale-dependent collation and would silently disagree with the Rust
+  // relay's byte ordering on some hosts, breaking HMAC verification.
+  normalized.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   for (let index = 1; index < normalized.length; index += 1) {
     if (normalized[index - 1]?.[0] === normalized[index]?.[0]) {
       throw new ProtocolError(

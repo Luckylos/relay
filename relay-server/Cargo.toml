@@ -11,6 +11,12 @@ path = "main.rs"
 name = "codex-https-relay"
 path = "https_relay_main.rs"
 
+# Cross-language conformance runner, not a deployed artifact. Driven by
+# protocol/conformance.py; see that file for why the gate exists.
+[[bin]]
+name = "conformance"
+path = "scripts/conformance.rs"
+
 [lib]
 path = "lib.rs"
 

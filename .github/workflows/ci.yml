@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Three independent jobs, deliberately not chained: `relay-server` and `worker`
+# must each stay buildable and testable on their own, so neither gates the other.
+# `conformance` is the only job that spans both, and it exists because the wire
+# protocol is implemented three times (Rust, TypeScript, Python probe) and each
+# subtree keeps its own copy of the shared fixture.
+jobs:
+  relay-server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay-server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay-server
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - run: npm ci
+      # typecheck + vitest (workerd pool) + wrangler dry-run build.
+      - run: npm run check
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay-server
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install worker dependencies
+        working-directory: worker
+        # esbuild is needed to bundle the TypeScript runner for plain Node.
+        run: npm ci
+
+      - name: Cross-language protocol conformance
+        # Verifies the per-subtree fixture copies are byte-identical to
+        # protocol/relay-protocol-v1.json, then drives all three
+        # implementations over shared vectors covering ASCII header ordering,
+        # SPACE/TAB-only whitespace folding, non-ASCII targets and empty
+        # header/body edge cases. Any divergence in canonical form or HMAC fails.
+        run: python3 protocol/conformance.py
