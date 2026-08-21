@@ -11,8 +11,17 @@ use relay_config::RelayConfig;
 
 #[tokio::main]
 async fn main() {
-    let config =
-        RelayConfig::from_env().unwrap_or_else(|error| panic!("relay config error: {error}"));
+    // A config error is an operator mistake in the unit or env file, not a bug:
+    // report it on stderr and exit non-zero rather than panicking. A panic here
+    // buries the offending variable under a backtrace, and with
+    // `Restart=on-failure` a single typo becomes an unexplained restart loop.
+    let config = match RelayConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("relay config error: {error}");
+            std::process::exit(2);
+        }
+    };
 
     let mut keys = KeyRing::default();
     keys.insert(&config.current_key_id, &config.current_secret);
