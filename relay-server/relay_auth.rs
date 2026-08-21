@@ -61,8 +61,12 @@ struct InMemoryNonceStore {
 }
 
 impl InMemoryNonceStore {
+    /// `expires_at` is the last instant at which the recorded request could
+    /// still be accepted. Entries are pruned only once that instant has passed,
+    /// so `>=` keeps the entry alive on its final second instead of dropping it
+    /// one tick early and re-admitting the very request it must block.
     fn check_and_record(&mut self, key_id: &str, nonce: &str, expires_at: i64, now: i64) -> bool {
-        self.entries.retain(|_, expiry| *expiry > now);
+        self.entries.retain(|_, expiry| *expiry >= now);
         let key = (key_id.to_owned(), nonce.to_owned());
         if self.entries.contains_key(&key) {
             return false;
@@ -111,7 +115,14 @@ impl AuthGate {
         mac.verify_slice(&signature)
             .map_err(|_| AuthError::InvalidSignature)?;
 
-        let expires_at = now.saturating_add(skew);
+        // Anchor retention to the end of *this request's* validity span, not to
+        // when it happened to be observed. A request signed at `timestamp` stays
+        // acceptable until `timestamp + skew`, so a nonce recorded early in that
+        // span must outlive the observation by the remaining window -- spec 5.3
+        // ("retain accepted nonces for at least 2x the clock skew"). Anchoring
+        // to `now` instead expires the entry while the same signed bytes are
+        // still replayable.
+        let expires_at = signing.timestamp.saturating_add(skew);
         if !self
             .nonces
             .check_and_record(signing.key_id, signing.nonce, expires_at, now)

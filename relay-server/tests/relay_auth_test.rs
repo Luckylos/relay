@@ -201,3 +201,71 @@ fn rejects_invalid_nonce_before_recording_it() {
         Err(AuthError::Protocol(ProtocolError::InvalidField("nonce")))
     ));
 }
+
+const SKEW: i64 = 60;
+
+fn skewed_gate() -> AuthGate {
+    let mut keys = KeyRing::default();
+    keys.insert("current", CURRENT_KEY);
+    AuthGate::new(keys, AuthPolicy::new(SKEW))
+}
+
+fn signed_at(timestamp: i64) -> TestRequest {
+    let mut request = TestRequest::signed("current", CURRENT_KEY);
+    request.timestamp = timestamp;
+    request.signature = request.sign(CURRENT_KEY);
+    request
+}
+
+/// A nonce must stay blocked for as long as its own timestamp is acceptable.
+///
+/// A request signed at `ts` is accepted across `[ts - skew, ts + skew]`, a span
+/// `2 * skew` wide. Expiring the cache entry relative to when it was *observed*
+/// rather than to the end of that span leaves a replay hole: a request first
+/// seen early in its own validity span is forgotten while still replayable.
+#[test]
+fn a_nonce_stays_blocked_across_its_whole_validity_span() {
+    let mut gate = skewed_gate();
+    let request = signed_at(NOW);
+
+    // Earliest instant the relay accepts it: the signer's clock is a full skew
+    // ahead of the relay's, which the +/- window explicitly permits.
+    gate.authenticate(NOW - SKEW, request.auth_request())
+        .expect("first use at the earliest acceptable instant must succeed");
+
+    for offset in [-SKEW + 1, -SKEW / 2, -1, 0, 1, SKEW / 2, SKEW - 1, SKEW] {
+        let now = NOW + offset;
+        assert!(
+            (now - request.timestamp).abs() <= SKEW,
+            "probe at ts{offset:+} must itself still be inside the accept window"
+        );
+        assert!(
+            matches!(
+                gate.authenticate(now, request.auth_request()),
+                Err(AuthError::Replay)
+            ),
+            "replay at ts{offset:+} was not blocked while the timestamp is still in window"
+        );
+    }
+}
+
+/// The replay cache must stay bounded. Once a timestamp is outside the window
+/// the request is rejected on the timestamp alone, so retaining its nonce
+/// forever would only leak memory.
+#[test]
+fn a_nonce_is_reusable_once_its_original_timestamp_is_out_of_window() {
+    let mut gate = skewed_gate();
+    let first = signed_at(NOW);
+    gate.authenticate(NOW, first.auth_request())
+        .expect("first use must succeed");
+
+    let later = NOW + 10 * SKEW;
+    let mut second = signed_at(later);
+    second.nonce = first.nonce.clone();
+    second.signature = second.sign(CURRENT_KEY);
+
+    assert!(
+        gate.authenticate(later, second.auth_request()).is_ok(),
+        "a nonce whose original request can no longer be accepted must not be retained"
+    );
+}

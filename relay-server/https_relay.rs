@@ -18,9 +18,35 @@ use crate::relay_protocol::{
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const MAX_CANONICAL_HEADERS_BYTES: usize = 32 * 1024;
 const CONTROL_PREFIX: &str = "x-codex-relay-";
-const FORWARD_HEADERS: &[&str] = &[
+
+/// Headers that must never appear in a canonical header block.
+///
+/// Two distinct reasons, kept in one list because the enforcement point is the
+/// same:
+///
+/// * hop-by-hop and framing headers belong to the Worker->relay and
+///   relay->upstream connections individually; reinjecting a caller-supplied
+///   value would corrupt framing or leak proxy credentials.
+/// * platform source-revealing headers describe the *original* client. The
+///   relay exists so upstream sees only the VPS, so these must be refused even
+///   when correctly signed -- the caller holding a signing key is not
+///   authorization to attribute traffic to an arbitrary origin IP. The Worker
+///   strips them on its side, but the relay is independently deployable and
+///   cannot delegate this invariant to its caller.
+///
+/// Kept sorted so `x-codex-relay-*` (handled by CONTROL_PREFIX) is the only
+/// pattern rule and everything else is an exact match.
+const FORBIDDEN_HEADERS: &[&str] = &[
+    "cdn-loop",
+    "cf-connecting-ip",
+    "cf-connecting-ipv6",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+    "cf-worker",
     "connection",
     "content-length",
+    "forwarded",
     "host",
     "keep-alive",
     "proxy-authenticate",
@@ -29,7 +55,13 @@ const FORWARD_HEADERS: &[&str] = &[
     "te",
     "trailer",
     "transfer-encoding",
+    "true-client-ip",
     "upgrade",
+    "x-client-ip",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,7 +341,7 @@ fn decode_header_block(headers: &HeaderMap) -> Result<Vec<[String; 2]>, Rejectio
         let (name, value) = line
             .split_once(':')
             .ok_or_else(|| reject(StatusCode::BAD_REQUEST, "relay_protocol_error"))?;
-        if FORWARD_HEADERS.contains(&name) || name.starts_with(CONTROL_PREFIX) {
+        if FORBIDDEN_HEADERS.contains(&name) || name.starts_with(CONTROL_PREFIX) {
             return Err(reject(StatusCode::BAD_REQUEST, "relay_forbidden_header"));
         }
         parsed.push([name.to_owned(), value.to_owned()]);

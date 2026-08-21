@@ -136,6 +136,137 @@ fn app_with(calls: Arc<AtomicUsize>) -> axum::Router {
     build_app(RelayState::with_clock(auth, forwarder, clock))
 }
 
+/// Build a validly signed request whose canonical header block carries `name`.
+///
+/// The signature is computed over the block that actually contains the header,
+/// so a rejection can only come from the relay's own header policy -- never
+/// from a signature or digest mismatch.
+fn signed_request_with_header(name: &str, value: &str, nonce: &str) -> Request<Body> {
+    let method = "POST";
+    let target = "https://api.example.com/v1/responses";
+    let headers = vec![
+        ["content-type".to_owned(), "application/json".to_owned()],
+        [name.to_owned(), value.to_owned()],
+    ];
+    let body = br#"{"model":"fixture"}"#.to_vec();
+    let input = RelaySigningInput {
+        version: 1,
+        key_id: "current",
+        timestamp: NOW,
+        nonce,
+        method,
+        target,
+        headers: &headers,
+        body: &body,
+    };
+    let signature = sign_relay_request(&input, SECRET).unwrap();
+    let header_block = canonicalize_headers(&headers).unwrap();
+
+    Request::builder()
+        .method("POST")
+        .uri("/v1/forward")
+        .header("content-type", "application/octet-stream")
+        .header("x-codex-relay-version", "1")
+        .header("x-codex-relay-key-id", "current")
+        .header("x-codex-relay-timestamp", NOW.to_string())
+        .header("x-codex-relay-nonce", nonce)
+        .header("x-codex-relay-method", method)
+        .header("x-codex-relay-target", base64url_encode(target.as_bytes()))
+        .header(
+            "x-codex-relay-body-sha256",
+            codex_egress_relay::relay_protocol::sha256_base64url(&body),
+        )
+        .header(
+            "x-codex-relay-headers",
+            base64url_encode(header_block.as_bytes()),
+        )
+        .header("x-codex-relay-signature", signature)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Platform source-revealing headers must not survive into the upstream request.
+///
+/// The whole point of the relay is that upstream sees the VPS and nothing about
+/// the original client. The Worker strips these on its side, but the relay is an
+/// independently deployable trust boundary reachable by anyone holding a signing
+/// key, so it must enforce the rule itself rather than trusting its caller.
+#[tokio::test]
+async fn platform_source_revealing_headers_are_rejected_before_the_forwarder() {
+    // Every header the Worker's own strip list treats as source-revealing.
+    let source_revealing = [
+        "cdn-loop",
+        "cf-connecting-ip",
+        "cf-connecting-ipv6",
+        "cf-ipcountry",
+        "cf-ray",
+        "cf-visitor",
+        "cf-worker",
+        "forwarded",
+        "true-client-ip",
+        "x-client-ip",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    ];
+
+    for (index, name) in source_revealing.iter().enumerate() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        // Distinct nonce per case so a rejection is never a replay artifact.
+        let nonce = base64url_encode(&[index as u8 + 0x40; 16]);
+        let response = app_with(calls.clone())
+            .oneshot(signed_request_with_header(name, "203.0.113.7", &nonce))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "signed block carrying `{name}` must be rejected"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "`{name}` must be rejected before any egress"
+        );
+    }
+}
+
+/// The rejection above must be a targeted policy, not a blanket denial: the
+/// business headers the spec explicitly binds into the signature still pass.
+#[tokio::test]
+async fn spec_permitted_business_headers_still_reach_the_forwarder() {
+    for (index, (name, value)) in [
+        ("authorization", "Bearer upstream-token"),
+        ("accept", "text/event-stream"),
+        ("accept-encoding", "gzip"),
+        ("session-id", "abc123"),
+        ("x-client-version", "1.2.3"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let nonce = base64url_encode(&[index as u8 + 0x70; 16]);
+        let response = app_with(calls.clone())
+            .oneshot(signed_request_with_header(name, value, &nonce))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "spec-permitted header `{name}` must be forwarded"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "`{name}` must reach egress"
+        );
+    }
+}
+
 #[tokio::test]
 async fn valid_forward_request_enters_the_injected_forwarder() {
     let calls = Arc::new(AtomicUsize::new(0));

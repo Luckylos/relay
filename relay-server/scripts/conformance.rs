@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
-use codex_egress_relay::relay_protocol::{build_canonical_request, sign_relay_request, RelaySigningInput};
+use codex_egress_relay::relay_protocol::{
+    build_canonical_request, sign_relay_request, RelaySigningInput,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
