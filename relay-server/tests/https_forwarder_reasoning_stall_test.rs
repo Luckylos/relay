@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use codex_egress_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
-use codex_egress_relay::https_relay::{ForwardRequest, Forwarder};
+use codex_https_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
+use codex_https_relay::https_relay::{ForwardRequest, Forwarder};
 use rustls::pki_types::CertificateDer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

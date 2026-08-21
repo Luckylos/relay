@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use codex_egress_relay::relay_resolver::{DnsLookup, LookupFuture, SafeResolver};
+use codex_https_relay::relay_resolver::{DnsLookup, LookupFuture, SafeResolver};
 use futures_util::StreamExt;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -98,7 +98,7 @@ pub fn safe_resolver_for(addresses: Vec<IpAddr>) -> SafeResolver {
 /// Drain a forward stream into one buffer. Only for tests that assert on the
 /// whole body; streaming tests must poll chunk by chunk instead.
 pub async fn collect_body(
-    mut body: codex_egress_relay::https_relay::ForwardStream,
+    mut body: codex_https_relay::https_relay::ForwardStream,
 ) -> Result<Bytes, std::io::Error> {
     let mut collected = Vec::new();
     while let Some(chunk) = body.next().await {

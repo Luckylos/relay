@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use codex_egress_relay::safe_dns::{validate_resolved_addresses, DnsPolicyError};
+use codex_https_relay::safe_dns::{validate_resolved_addresses, DnsPolicyError};
 
 fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))

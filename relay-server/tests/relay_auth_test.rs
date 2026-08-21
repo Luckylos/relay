@@ -1,5 +1,5 @@
-use codex_egress_relay::relay_auth::{AuthError, AuthGate, AuthPolicy, KeyRing, RelayAuthRequest};
-use codex_egress_relay::relay_protocol::{ProtocolError, RelaySigningInput};
+use codex_https_relay::relay_auth::{AuthError, AuthGate, AuthPolicy, KeyRing, RelayAuthRequest};
+use codex_https_relay::relay_protocol::{ProtocolError, RelaySigningInput};
 
 const NOW: i64 = 1_700_000_000;
 const CURRENT_KEY: &[u8] = b"current-fixture-key";
@@ -45,7 +45,7 @@ impl TestRequest {
             headers: &self.headers,
             body: &self.body,
         };
-        codex_egress_relay::relay_protocol::sign_relay_request(&input, secret).unwrap()
+        codex_https_relay::relay_protocol::sign_relay_request(&input, secret).unwrap()
     }
 
     fn auth_request(&self) -> RelayAuthRequest<'_> {

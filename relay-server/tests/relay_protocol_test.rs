@@ -1,6 +1,6 @@
 use std::fs;
 
-use codex_egress_relay::relay_protocol::{
+use codex_https_relay::relay_protocol::{
     base64url_decode, base64url_encode, build_canonical_request, canonicalize_headers,
     sha256_base64url, sign_relay_request, ProtocolError, RelaySigningInput,
 };

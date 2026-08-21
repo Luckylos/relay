@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 
-use codex_egress_relay::https_forwarder::{
+use codex_https_relay::https_forwarder::{
     DEFAULT_CONNECT_TIMEOUT_SECS, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_RESPONSE_HEADER_TIMEOUT_SECS,
     DEFAULT_STREAM_STALL_TIMEOUT_SECS,
 };
-use codex_egress_relay::https_relay::{DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENCY};
+use codex_https_relay::https_relay::{DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENCY};
 
 pub struct RelayConfig {
     pub listen_addr: SocketAddr,

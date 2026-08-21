@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use codex_egress_relay::relay_resolver::{DnsLookup, LookupFuture, ResolverError, SafeResolver};
+use codex_https_relay::relay_resolver::{DnsLookup, LookupFuture, ResolverError, SafeResolver};
 use reqwest::dns::Resolve;
 
 fn test_tls_config() -> rustls::ClientConfig {

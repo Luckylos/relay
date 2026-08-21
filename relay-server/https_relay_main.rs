@@ -2,11 +2,11 @@ mod relay_config;
 
 use std::sync::Arc;
 
-use codex_egress_relay::https_forwarder::{
+use codex_https_relay::https_forwarder::{
     build_production_client_with_stall, HttpsForwarder, DEFAULT_TIMEOUT_SECS,
 };
-use codex_egress_relay::https_relay::{build_app, RelayState};
-use codex_egress_relay::relay_auth::{AuthGate, AuthPolicy, KeyRing};
+use codex_https_relay::https_relay::{build_app, RelayState};
+use codex_https_relay::relay_auth::{AuthGate, AuthPolicy, KeyRing};
 use relay_config::RelayConfig;
 
 #[tokio::main]

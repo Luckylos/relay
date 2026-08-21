@@ -7,7 +7,7 @@ use axum::{
     body::{to_bytes, Body, Bytes},
     http::{HeaderMap, Request, StatusCode},
 };
-use codex_egress_relay::{
+use codex_https_relay::{
     https_relay::{
         build_app, ForwardError, ForwardRequest, ForwardResponse, Forwarder, RelayState,
     },
@@ -83,7 +83,7 @@ fn signed_request_with_nonce(nonce: &str) -> Request<Body> {
         .header("x-codex-relay-target", base64url_encode(target.as_bytes()))
         .header(
             "x-codex-relay-body-sha256",
-            codex_egress_relay::relay_protocol::sha256_base64url(&body),
+            codex_https_relay::relay_protocol::sha256_base64url(&body),
         )
         .header(
             "x-codex-relay-headers",
@@ -124,7 +124,7 @@ fn empty_header_request() -> Request<Body> {
         .header("x-codex-relay-target", base64url_encode(target.as_bytes()))
         .header(
             "x-codex-relay-body-sha256",
-            codex_egress_relay::relay_protocol::sha256_base64url(&body),
+            codex_https_relay::relay_protocol::sha256_base64url(&body),
         )
         .header(
             "x-codex-relay-headers",
@@ -537,7 +537,7 @@ fn signed_request_with_header(name: &str, value: &str, nonce: &str) -> Request<B
         .header("x-codex-relay-target", base64url_encode(target.as_bytes()))
         .header(
             "x-codex-relay-body-sha256",
-            codex_egress_relay::relay_protocol::sha256_base64url(&body),
+            codex_https_relay::relay_protocol::sha256_base64url(&body),
         )
         .header(
             "x-codex-relay-headers",

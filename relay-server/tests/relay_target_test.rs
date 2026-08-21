@@ -1,4 +1,4 @@
-use codex_egress_relay::relay_target::{Target, TargetError};
+use codex_https_relay::relay_target::{Target, TargetError};
 
 #[test]
 fn accepts_public_https_target_and_supported_method() {

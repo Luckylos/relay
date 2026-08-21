@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use codex_egress_relay::https_forwarder::{
+use codex_https_relay::https_forwarder::{
     build_egress_client, build_egress_client_with_timeouts, HttpsForwarder,
 };
-use codex_egress_relay::https_relay::{ForwardRequest, Forwarder};
+use codex_https_relay::https_relay::{ForwardRequest, Forwarder};
 use common::{
     client_tls_config, http_chunk, issue_upstream_certificate, server_tls_config, Issued,
 };
@@ -307,7 +307,7 @@ async fn times_out_on_response_headers_well_before_the_overall_ceiling() {
     assert!(
         matches!(
             result,
-            Err(codex_egress_relay::https_relay::ForwardError::Timeout)
+            Err(codex_https_relay::https_relay::ForwardError::Timeout)
         ),
         "silent upstream must map to ForwardError::Timeout"
     );

@@ -18,8 +18,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use codex_egress_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
-use codex_egress_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
+use codex_https_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
+use codex_https_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
 use common::{client_tls_config, PinnedResolver};
 use tokio::net::TcpListener;
 

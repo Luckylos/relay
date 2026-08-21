@@ -9,7 +9,7 @@ client → Worker → HTTPS relay (VPS) → dynamic HTTPS upstream:443
 ```
 
 > **Status:** the Worker side is complete and covered by tests. The relay is a
-> separate Rust service (`codex-egress-relay`, binary `codex-https-relay`).
+> separate Rust service (`codex-https-relay`).
 > End-to-end validation against a deployed relay and a real upstream is still
 > outstanding — see *Verification status*.
 

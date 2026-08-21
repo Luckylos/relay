@@ -213,7 +213,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-egress-relay"
+name = "codex-https-relay"
 version = "0.2.0"
 dependencies = [
  "axum",

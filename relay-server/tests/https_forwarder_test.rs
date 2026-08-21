@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use codex_egress_relay::https_forwarder::{build_egress_client, HttpsForwarder};
-use codex_egress_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
-use codex_egress_relay::relay_resolver::SafeResolver;
+use codex_https_relay::https_forwarder::{build_egress_client, HttpsForwarder};
+use codex_https_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
+use codex_https_relay::relay_resolver::SafeResolver;
 use common::{
     client_tls_config, collect_body, issue_upstream_certificate, safe_resolver_for,
     server_tls_config, Issued, PinnedResolver,
