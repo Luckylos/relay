@@ -1,0 +1,34 @@
+# Claude ingress, deployed as its own Cloudflare Worker.
+#
+#   npx wrangler deploy -c wrangler.claude.toml
+#
+# Separate Worker, shared source package: the relay envelope and signing code
+# must stay byte-identical with the Rust relay's conformance vectors, so both
+# entrypoints import one copy of it rather than keeping two in sync.
+name = "claude-worker-relay"
+main = "src/claude/index.ts"
+compatibility_date = "2026-08-19"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Same relay and same key id as the Codex Worker. The relay's KeyRing is keyed by
+# id, so a shared key means zero relay-side change and no service restart. The
+# tradeoff is that the relay cannot tell the two Workers apart, so neither can be
+# revoked or rate-limited independently; splitting them later means adding a key
+# to the relay's config and restarting it.
+EGRESS_RELAY_URL = "https://relay.543822.xyz/v1/forward"
+EGRESS_RELAY_KEY_ID = "w-20260820"
+
+# Upstreams this Worker may reach. The ingress is open by design, so this is what
+# keeps it from being an open proxy: egress leaves the relay's VPS address, and
+# abuse would be attributed there. Anthropic-shaped hosts only -- there is no
+# reason for a Claude ingress to reach an OpenAI endpoint.
+#
+# Costs callers nothing; it is not a client-side setting. A leading dot also
+# matches subdomains. Clear the value to restore any-public-host behaviour.
+ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.anthropic.com"
+
+# EGRESS_RELAY_SECRET is deliberately absent: it is a Worker secret, set with
+# `npx wrangler secret put EGRESS_RELAY_SECRET -c wrangler.claude.toml`, and it
+# must be the SAME value the Codex Worker uses, since both sign against the
+# relay's `w-20260820` key. See ../docs/https-relay-design-v1.md.
