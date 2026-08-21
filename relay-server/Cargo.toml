@@ -2,19 +2,20 @@
 name = "codex-https-relay"
 version = "0.2.0"
 edition = "2021"
+autobins = false
 
 [[bin]]
 name = "codex-https-relay"
-path = "https_relay_main.rs"
+path = "src/bin/codex-https-relay.rs"
 
 # Cross-language conformance runner, not a deployed artifact. Driven by
 # protocol/conformance.py; see that file for why the gate exists.
 [[bin]]
 name = "conformance"
-path = "scripts/conformance.rs"
+path = "src/bin/conformance.rs"
 
 [lib]
-path = "lib.rs"
+path = "src/lib.rs"
 
 [dependencies]
 # http2 + stream. default-features=false disables auto gzip/deflate/brotli so
@@ -50,6 +51,6 @@ tower = { version = "0.5", features = ["util"] }
 # Full optimization: the egress hot path reads+parses+reinjects every request
 # body per turn, and this is a long-lived service. opt-level is codegen-only and
 # does NOT affect the TLS ClientHello / JA4 (that is fixed by rustls + aws-lc-rs
-# in tls.rs), so raising it carries no fingerprint risk.
+# in src/egress/tls.rs), so raising it carries no fingerprint risk.
 [profile.release]
 opt-level = 3

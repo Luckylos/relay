@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
-use codex_https_relay::relay_protocol::{
+use codex_https_relay::protocol::signing::{
     build_canonical_request, sign_relay_request, RelaySigningInput,
 };
 use serde::{Deserialize, Serialize};

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
-use crate::safe_dns::{validate_resolved_addresses, DnsPolicyError};
+use crate::egress::safe_dns::{validate_resolved_addresses, DnsPolicyError};
 
 pub type LookupFuture = Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, ResolverError>> + Send>>;
 

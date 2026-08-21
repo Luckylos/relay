@@ -12,8 +12,8 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
 
-use crate::relay_auth::{AuthError, AuthGate, RelayAuthRequest};
-use crate::relay_protocol::{
+use crate::protocol::auth::{AuthError, AuthGate, RelayAuthRequest};
+use crate::protocol::signing::{
     base64url_decode, canonicalize_headers, sha256_base64url, RelaySigningInput,
 };
 

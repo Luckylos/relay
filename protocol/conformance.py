@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-The wire protocol is implemented three times: `relay-server/relay_protocol.rs`
+The wire protocol is implemented three times: `relay-server/src/protocol/signing.rs`
 (Rust server), `worker/src/relay/{protocol,signing}.ts` (Cloudflare Worker) and
 `relay-server/scripts/relay_probe.py` (operator probe). Before the monorepo they
 lived in separate repositories with a hand-copied fixture, so an edit to one side

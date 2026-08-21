@@ -15,14 +15,14 @@ through Cloudflare's stack from a shared edge address. Two properties therefore
 require a relay of our own:
 
 1. **TLS fingerprint** — the ClientHello must match the real client a gated
-   upstream expects. See `tls.rs`.
+   upstream expects. See `src/egress/tls.rs`.
 2. **Stable egress address** — a fixed VPS address rather than a rotating pool
    of shared edge addresses.
 
 The relay accepts only HMAC-signed envelopes from a known Worker key, so opening
 the Worker's ingress does not open this egress.
 
-## TLS fingerprint (`tls.rs`)
+## TLS fingerprint (`src/egress/tls.rs`)
 
 rustls 0.23 backed by the **aws-lc-rs** provider, not `ring`. `ring` omits the
 `ecdsa_secp521r1_sha512` (0x0603) signature algorithm, which was the sole JA4
@@ -44,7 +44,7 @@ Worker signed, unmodified.
 
 ## Configuration (environment)
 
-Read by `relay_config.rs`; a missing or empty value falls back to a default,
+Read by `src/bin/relay_config.rs`; a missing or empty value falls back to a default,
 while an invalid value or `0` fails startup rather than silently degrading.
 
 | Variable | Purpose |

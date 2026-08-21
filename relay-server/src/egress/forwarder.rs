@@ -11,7 +11,7 @@
 //! * redirects are never followed, because hop 2 would escape both the target
 //!   policy and the resolver;
 //! * the TLS stack is the shared, fingerprint-critical rustls + aws-lc-rs
-//!   config from [`crate::tls`], never reqwest's default provider;
+//!   config from [`crate::egress::tls`], never reqwest's default provider;
 //! * no proxy env var can divert egress (`.no_proxy()` via the resolver seam).
 //!
 //! Upstream errors are collapsed into coarse [`ForwardError`] variants so that
@@ -25,8 +25,10 @@ use reqwest::dns::Resolve;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, Method};
 
-use crate::https_relay::{ForwardError, ForwardRequest, ForwardResponse, Forwarder};
-use crate::relay_target::Target;
+use crate::app::relay::{ForwardError, ForwardRequest, ForwardResponse, Forwarder};
+use crate::egress::resolver::SafeResolver;
+use crate::egress::target::Target;
+use crate::egress::tls;
 
 /// Default ceiling for a whole upstream request/response exchange.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -105,7 +107,7 @@ fn project_response_headers(upstream: &reqwest::header::HeaderMap) -> reqwest::h
 /// Build the relay's outbound client.
 ///
 /// `tls` is supplied by the caller so tests can trust a local certificate while
-/// production passes [`crate::tls::build_tls_config`]; `resolver` is the DNS
+/// production passes [`crate::egress::tls::build_tls_config`]; `resolver` is the DNS
 /// seam that carries the SSRF policy.
 pub fn build_egress_client(
     tls: rustls::ClientConfig,
@@ -177,8 +179,8 @@ pub fn build_production_client_with_stall(
     connect_timeout_secs: u64,
 ) -> Client {
     build_egress_client_with_timeouts(
-        crate::tls::build_tls_config(),
-        Arc::new(crate::relay_resolver::SafeResolver::system()),
+        tls::build_tls_config(),
+        Arc::new(SafeResolver::system()),
         timeout_secs,
         stream_stall_timeout_secs,
         connect_timeout_secs,
@@ -188,8 +190,8 @@ pub fn build_production_client_with_stall(
 /// Production client: shared TLS config plus the SSRF-safe system resolver.
 pub fn build_production_client(timeout_secs: u64) -> Client {
     build_egress_client(
-        crate::tls::build_tls_config(),
-        Arc::new(crate::relay_resolver::SafeResolver::system()),
+        tls::build_tls_config(),
+        Arc::new(SafeResolver::system()),
         timeout_secs,
     )
 }

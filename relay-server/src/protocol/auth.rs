@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::relay_protocol::{
+use crate::protocol::signing::{
     base64url_decode, build_canonical_request, ProtocolError, RelaySigningInput,
 };
 

@@ -68,7 +68,7 @@ python3 protocol/conformance.py
 
 ## The conformance gate
 
-The wire protocol is implemented three times: `relay-server/relay_protocol.rs`,
+The wire protocol is implemented three times: `relay-server/src/protocol/signing.rs`,
 `worker/src/relay/{protocol,signing}.ts`, and `relay-server/scripts/relay_probe.py`.
 `protocol/conformance.py` drives all three over shared vectors and requires
 byte-identical canonical requests and HMAC signatures.
