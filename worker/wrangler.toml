@@ -9,3 +9,13 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 EGRESS_RELAY_URL = "https://relay.543822.xyz/v1/forward"
 EGRESS_RELAY_KEY_ID = "w-20260820"
+
+# Upstreams this Worker may reach. The ingress is open by design, so this is what
+# keeps it from being an open proxy: egress leaves the relay's VPS address, and
+# abuse would be attributed there. Pinned here rather than left unset so a deploy
+# cannot silently turn the Worker into an any-host proxy.
+#
+# Costs callers nothing -- it is not a client-side setting. A leading dot also
+# matches subdomains. Widen by adding hosts; clear the value to restore
+# any-public-host behaviour.
+ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"

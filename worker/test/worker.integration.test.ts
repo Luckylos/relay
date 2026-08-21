@@ -20,8 +20,10 @@ describe("Worker integration entrypoint", () => {
         default: { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
       };
       // No credential: real bindings must relay an unadorned client request.
+      // The host must be one the production ALLOWED_UPSTREAM_HOSTS permits,
+      // since this suite deliberately runs against the real wrangler.toml vars.
       const response = await workerExports.default.fetch(
-        "https://relay.example/second.example/v1/models?limit=1",
+        "https://relay.example/api.openai.com/v1/models?limit=1",
       );
 
       expect(response.status).toBe(201);
@@ -36,7 +38,30 @@ describe("Worker integration entrypoint", () => {
         new TextDecoder().decode(
           base64UrlDecode(sent.headers.get("x-codex-relay-target") ?? ""),
         ),
-      ).toBe("https://second.example/v1/models?limit=1");
+      ).toBe("https://api.openai.com/v1/models?limit=1");
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+
+  it("enforces the configured upstream allowlist through the real bindings", async () => {
+    // Guards the deployed configuration itself, not just the code: if
+    // ALLOWED_UPSTREAM_HOSTS were dropped from wrangler.toml, the Worker would
+    // silently become an open proxy egressing from the relay's address.
+    const upstream = vi.spyOn(globalThis, "fetch");
+    try {
+      const workerExports = exports as unknown as {
+        default: { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
+      };
+      const response = await workerExports.default.fetch(
+        "https://relay.example/not-allowed.example/v1/models",
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: { message: "invalid target", type: "invalid_target" },
+      });
+      expect(upstream).not.toHaveBeenCalled();
     } finally {
       upstream.mockRestore();
     }
