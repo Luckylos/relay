@@ -125,7 +125,3 @@ export function readCloakProfile(env: CloakProfileEnv): CloakProfile {
 export function cloakUserAgent(profile: CloakProfile): string {
   return `claude-cli/${profile.cliVersion} (external, ${profile.entrypoint})`;
 }
-
-/** The CLI's default system-prompt identity line, verbatim. */
-export const CLAUDE_CODE_SYSTEM_IDENTITY =
-  "You are Claude Code, Anthropic's official CLI for Claude.";

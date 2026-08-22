@@ -38,8 +38,6 @@ import {
 import { projectClaudeRequest } from "../src/cloak";
 import { isStrippedRequestHeader } from "../src/headers";
 
-const TODAY = "2026-08-22";
-
 const IDENTITY: ClientIdentity = {
   deviceId: "a".repeat(64),
   sessionId: "00000000-0000-4000-8000-000000000000",
@@ -62,7 +60,6 @@ function shape(
     endpoint,
     identity: IDENTITY,
     contentType: "application/json",
-    today: TODAY,
   });
 }
 
@@ -352,103 +349,125 @@ describe("metadata.user_id", () => {
   });
 });
 
-describe("body shaping", () => {
-  it("prepends the identity line and appends the date reminder", () => {
-    const body = decode(shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body);
-    const system = body.system as Array<Record<string, unknown>>;
-
-    expect(system[0]?.text).toBe(
-      "You are Claude Code, Anthropic's official CLI for Claude.",
-    );
-    expect(String(system[system.length - 1]?.text)).toContain("# currentDate");
-    expect(String(system[system.length - 1]?.text)).toContain(TODAY);
-  });
-
-  it("keeps a caller's own system content", () => {
+describe("body handling", () => {
+  it("forwards a caller's system prompt unchanged", () => {
+    // The prompt is the caller's. Prepending an identity line would shift the
+    // entire cached prefix and change what the model answers.
     const body = decode(
       shape({ model: "claude-sonnet-4-6", system: "be terse", messages: MESSAGES }).body,
     );
-    const texts = (body.system as Array<Record<string, unknown>>).map((b) => b.text);
-
-    expect(texts).toContain("be terse");
-    expect(texts[0]).toBe("You are Claude Code, Anthropic's official CLI for Claude.");
+    expect(body.system).toBe("be terse");
   });
 
-  it("puts the cache breakpoint on the last system block", () => {
-    // A breakpoint caches everything up to and including itself, so an earlier
-    // block would leave the rest of the prefix uncached.
-    const system = decode(
-      shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body,
-    ).system as Array<Record<string, unknown>>;
-
-    expect(system[system.length - 1]?.cache_control).toEqual({ type: "ephemeral" });
-    expect(system[0]?.cache_control).toBeUndefined();
+  it("adds no system prompt when the caller sent none", () => {
+    // A bare API caller stays a bare API caller. One fixed sentence does not
+    // approximate Claude Code's situated prompt, so it only costs tokens.
+    const body = decode(shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body);
+    expect(body.system).toBeUndefined();
   });
 
-  it("falls back to tools when there is no system prompt", () => {
-    // Stateless callers with a large tool prefix would otherwise re-tokenize it
-    // on every request. count_tokens has no system in the common case.
-    const result = shape(
-      {
-        model: "claude-sonnet-4-6",
-        tools: [{ name: "read", description: "x" }],
-        messages: MESSAGES,
-      },
-      "count_tokens",
+  it("leaves system blocks and their cache breakpoints alone", () => {
+    // A breakpoint planted here would compete with the caller's own cache
+    // strategy, and a block inserted ahead of one would invalidate the prefix it
+    // was placed to protect.
+    const system = [
+      { type: "text", text: "first" },
+      { type: "text", text: "second", cache_control: { type: "ephemeral" } },
+    ];
+    const body = decode(
+      shape({ model: "claude-sonnet-4-6", system, messages: MESSAGES }).body,
     );
-    const body = decode(result.body);
-    const system = body.system as Array<Record<string, unknown>>;
-    const tools = body.tools as Array<Record<string, unknown>>;
-
-    // The system prompt is still built, so the breakpoint belongs there; the
-    // tools path is exercised by the no-system case below.
-    expect(system.length).toBeGreaterThan(0);
-    expect(tools[0]?.cache_control).toBeUndefined();
+    expect(body.system).toEqual(system);
   });
 
-  it("adds context_management only alongside thinking", () => {
-    // The edit clears thinking blocks, so on a request without any it would
-    // describe work that cannot happen.
-    const withThinking = decode(
+  it("leaves tools untouched", () => {
+    const tools = [{ name: "read", description: "x", input_schema: { type: "object" } }];
+    const body = decode(
+      shape({ model: "claude-sonnet-4-6", tools, messages: MESSAGES }).body,
+    );
+    expect(body.tools).toEqual(tools);
+  });
+
+  it("never adds context_management", () => {
+    // `clear_thinking_20251015` tells the API to drop thinking blocks. On a
+    // caller that owns its thinking history that is silent data loss it never
+    // asked for.
+    const body = decode(
       shape({
         model: "claude-sonnet-4-6",
         thinking: { type: "enabled", budget_tokens: 1024 },
         messages: MESSAGES,
       }).body,
     );
-    expect(withThinking.context_management).toEqual({
-      edits: [{ type: "clear_thinking_20251015", keep: "all" }],
-    });
-
-    const without = decode(
-      shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body,
-    );
-    expect(without.context_management).toBeUndefined();
+    expect(body.context_management).toBeUndefined();
   });
 
-  it("never overwrites a caller's own context_management", () => {
+  it("forwards a caller's own context_management", () => {
+    const managed = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
     const body = decode(
       shape({
         model: "claude-sonnet-4-6",
         thinking: { type: "enabled" },
-        context_management: { edits: [] },
+        context_management: managed,
         messages: MESSAGES,
       }).body,
     );
-    expect(body.context_management).toEqual({ edits: [] });
+    expect(body.context_management).toEqual(managed);
   });
 
-  it("reports capabilities from the transformed body", () => {
-    // The beta header is derived from this, so it must describe what is actually
-    // being sent -- including the context_management this transform just added.
+  it("preserves the caller's own fields verbatim", () => {
+    // Everything except `metadata` must survive byte-for-byte in value.
+    const original = {
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      temperature: 0.3,
+      stream: true,
+      system: [{ type: "text", text: "be terse" }],
+      messages: MESSAGES,
+    };
+    const body = decode(shape(original).body);
+    const { metadata, ...rest } = body;
+
+    expect(metadata).toBeDefined();
+    expect(rest).toEqual(original);
+  });
+
+  it("stamps the client identity into metadata", () => {
+    const metadata = decode(
+      shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body,
+    ).metadata as Record<string, unknown>;
+
+    expect(JSON.parse(String(metadata.user_id)).device_id).toBe(IDENTITY.deviceId);
+  });
+
+  it("keeps a caller's other metadata keys", () => {
+    // `user_id` is the only field this cloak owns.
+    const metadata = decode(
+      shape({
+        model: "claude-sonnet-4-6",
+        metadata: { trace: "abc" },
+        messages: MESSAGES,
+      }).body,
+    ).metadata as Record<string, unknown>;
+
+    expect(metadata.trace).toBe("abc");
+  });
+
+  it("reports capabilities from the caller's body", () => {
+    // The beta header is derived from this, so it must describe the request that
+    // is actually sent -- no more and no less than the caller asked for.
     const result = shape({
       model: "claude-sonnet-4-6",
       thinking: { type: "enabled" },
+      tools: [{ name: "read" }],
       messages: MESSAGES,
     });
 
     expect(result.capabilities.hasThinking).toBe(true);
-    expect(result.capabilities.hasContextManagement).toBe(true);
+    expect(result.capabilities.hasTools).toBe(true);
+    // False because nothing synthesizes it any more; announcing the beta without
+    // the field would be both a fingerprint and an upstream 400.
+    expect(result.capabilities.hasContextManagement).toBe(false);
   });
 
   it("leaves a non-JSON body untouched", () => {
@@ -457,11 +476,10 @@ describe("body shaping", () => {
       endpoint: "messages",
       identity: IDENTITY,
       contentType: "application/octet-stream",
-      today: TODAY,
     });
 
     expect(result.body).toBe(raw);
-    // Nothing is claimed for a body this module did not shape.
+    // Nothing is claimed for a body this module cannot read.
     expect(result.capabilities.hasTools).toBe(false);
   });
 
@@ -471,14 +489,13 @@ describe("body shaping", () => {
       endpoint: "messages",
       identity: IDENTITY,
       contentType: "application/json",
-      today: TODAY,
     });
     expect(result.body).toBe(raw);
   });
 
   it("leaves an unrecognised endpoint untouched", () => {
-    // Rewriting an unfamiliar shape risks corrupting a request that would
-    // otherwise have worked.
+    // An unfamiliar shape may not carry a `metadata` object at all; writing one
+    // would be inventing a schema.
     const raw = encode({ model: "claude-sonnet-4-6" });
     expect(shape({ model: "claude-sonnet-4-6" }, "other").body).toEqual(raw);
   });
@@ -496,27 +513,9 @@ describe("body shaping", () => {
       endpoint: "messages",
       identity: IDENTITY,
       contentType: "application/json",
-      today: TODAY,
     }).body;
 
     expect(new TextDecoder().decode(twice)).toBe(new TextDecoder().decode(once));
-  });
-
-  it("stays idempotent across a date change", () => {
-    // The reminder is matched by marker, not by text, so yesterday's reminder
-    // must not attract a second one today.
-    const once = shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body;
-    const twice = transformBody(once, {
-      endpoint: "messages",
-      identity: IDENTITY,
-      contentType: "application/json",
-      today: "2026-08-23",
-    }).body;
-
-    const system = (decode(twice).system as Array<Record<string, unknown>>).filter(
-      (block) => String(block.text).includes("# currentDate"),
-    );
-    expect(system).toHaveLength(1);
   });
 });
 
@@ -685,8 +684,6 @@ describe("projectClaudeRequest", () => {
     });
   }
 
-  const deps = { today: () => TODAY };
-
   it("derives the beta header from the body, not from the caller", async () => {
     // The caller claims tool use on a request with no tools; the header must
     // describe the body that is actually sent.
@@ -696,7 +693,6 @@ describe("projectClaudeRequest", () => {
       }),
       encode({ model: "claude-sonnet-4-6", messages: MESSAGES }),
       {},
-      deps,
     );
 
     expect(projected.headers.get("anthropic-beta")).toBe("claude-code-20250219");
@@ -712,7 +708,6 @@ describe("projectClaudeRequest", () => {
       request(body),
       encode(body),
       {},
-      deps,
     );
 
     expect(projected.headers.get("anthropic-beta")).toContain(
@@ -730,7 +725,6 @@ describe("projectClaudeRequest", () => {
       }),
       encode(body),
       {},
-      deps,
     );
 
     expect(projected.headers.get("anthropic-beta")).toContain(TOKEN_COUNTING_BETA);
@@ -738,8 +732,8 @@ describe("projectClaudeRequest", () => {
 
   it("writes a stable identity into the body", async () => {
     const body = { model: "claude-sonnet-4-6", messages: MESSAGES };
-    const first = await projectClaudeRequest(request(body), encode(body), {}, deps);
-    const second = await projectClaudeRequest(request(body), encode(body), {}, deps);
+    const first = await projectClaudeRequest(request(body), encode(body), {});
+    const second = await projectClaudeRequest(request(body), encode(body), {});
 
     expect(new TextDecoder().decode(first.body)).toBe(
       new TextDecoder().decode(second.body),
@@ -754,13 +748,11 @@ describe("projectClaudeRequest", () => {
       request(body, { "x-api-key": "key-a" }),
       encode(body),
       {},
-      deps,
     );
     const b = await projectClaudeRequest(
       request(body, { "x-api-key": "key-b" }),
       encode(body),
       {},
-      deps,
     );
 
     const deviceOf = (payload: Uint8Array) =>
@@ -778,14 +770,14 @@ describe("projectClaudeRequest", () => {
       thinking: { type: "enabled" },
       messages: MESSAGES,
     };
-    const once = await projectClaudeRequest(request(body), encode(body), {}, deps);
+    const once = await projectClaudeRequest(request(body), encode(body), {});
 
     const replay = new Request("https://w.example/api.anthropic.com/v1/messages", {
       method: "POST",
       headers: once.headers,
       body: new TextDecoder().decode(once.body),
     });
-    const twice = await projectClaudeRequest(replay, once.body, {}, deps);
+    const twice = await projectClaudeRequest(replay, once.body, {});
 
     expect(new TextDecoder().decode(twice.body)).toBe(
       new TextDecoder().decode(once.body),

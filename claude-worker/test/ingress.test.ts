@@ -173,21 +173,25 @@ describe("Claude Code cloak", () => {
     }
   });
 
-  it("shapes the body into Claude Code form", async () => {
-    const body = '{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}';
+  it("forwards the prompt untouched and stamps only the identity", async () => {
+    // The prompt is the caller's. Nothing is prepended to `system`, no date
+    // reminder is appended and no cache breakpoint is planted: an inserted block
+    // shifts the prompt prefix and costs the caller its own cache hits, and
+    // injected text changes what the model answers.
+    const body =
+      '{"model":"claude-sonnet-4-6","max_tokens":1024,"system":"be terse","messages":[{"role":"user","content":"hi"}]}';
     const spy = captureRelay();
     try {
       await worker.fetch(claudeCodeRequest(body), ENV, context());
 
       const relayed = JSON.parse(await sentRequest(spy).text());
-      // The caller's own fields are untouched...
       expect(relayed.model).toBe("claude-sonnet-4-6");
       expect(relayed.max_tokens).toBe(1024);
       expect(relayed.messages).toEqual([{ role: "user", content: "hi" }]);
-      // ...and the client's system identity is added ahead of them.
-      expect(relayed.system[0].text).toBe(
-        "You are Claude Code, Anthropic's official CLI for Claude.",
-      );
+      // Still the caller's bare string: not promoted to a block array, not
+      // reordered, nothing added.
+      expect(relayed.system).toBe("be terse");
+      expect(relayed.context_management).toBeUndefined();
       // `user_id` is a JSON string, not a nested object: an object here would be
       // immediately distinguishable from a real request.
       const userId = JSON.parse(relayed.metadata.user_id);
@@ -203,10 +207,10 @@ describe("Claude Code cloak", () => {
   });
 
   it("is idempotent across a second hop", async () => {
-    // A request can traverse more than one hop of this Worker. Without the
-    // insertion guards each pass would stack another identity block, another
-    // date reminder and another cache breakpoint, growing the prompt and
-    // invalidating the cached prefix the breakpoints exist to protect.
+    // A request can traverse more than one hop of this Worker, so each pass must
+    // converge on the same bytes. It does because the only field written is
+    // `metadata.user_id`, and that is derived from the credential rather than
+    // accumulated.
     const first = captureRelay();
     let relayed: string;
     let firstSigned: Map<string, string>;
@@ -240,8 +244,7 @@ describe("Claude Code cloak", () => {
         context(),
       );
 
-      // Body byte-identical: no stacked identity block, date reminder or
-      // breakpoint.
+      // Body byte-identical across hops.
       expect(await sentRequest(second).text()).toBe(relayed);
       // And the rebuilt headers converge too, including the beta list.
       expect(Object.fromEntries(signedHeaders(sentRequest(second)))).toEqual(

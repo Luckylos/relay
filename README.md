@@ -36,8 +36,8 @@ The intended behavioural differences between them:
 
 | | `codex-worker/` | `claude-worker/` |
 | --- | --- | --- |
-| Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Rebuilt from a pinned profile.** A caller may or may not be Claude Code, so one profile is applied to every request: identity headers, `anthropic-beta` derived from the body, and `metadata.user_id`. See `claude-worker/src/cloak/` |
-| Body | May gain `client_metadata` | Shaped: system identity line, cache breakpoints, `metadata.user_id` |
+| Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Rebuilt from a pinned profile.** A caller may or may not be Claude Code, so one profile is applied to every request: identity headers and `anthropic-beta` derived from the body. See `claude-worker/src/cloak/` |
+| Body | May gain `client_metadata` | Forwarded as-is except `metadata.user_id`; prompt content is never altered |
 | Upstream credential | Caller's `Authorization`, forwarded untouched | Caller's `x-api-key`, forwarded untouched |
 | Body ceiling | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
 

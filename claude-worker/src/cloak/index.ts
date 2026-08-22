@@ -1,13 +1,13 @@
 /**
  * Claude Code application-layer cloak.
  *
- * Composes the four concerns into one `projectRequest` hook: profile, identity,
- * body shape, headers. The order below is the only one that is correct.
+ * Composes the concerns into one `projectRequest` hook: profile, identity, body,
+ * headers. The order below is the only one that is correct.
  *
  *   1. classify the endpoint      -- decides which beta profile applies
  *   2. derive identity            -- needed by the body's metadata block
- *   3. transform the body         -- reports what the request actually asks for
- *   4. build the beta header      -- from the *transformed* body, never the caller's
+ *   3. read the body              -- reports what the request actually asks for
+ *   4. build the beta header      -- from the body, never from the caller's guess
  *   5. rebuild the headers        -- delete-then-write over the survivors
  *
  * Step 4 depending on step 3 is the point. Deriving betas from the incoming
@@ -15,7 +15,10 @@
  * from the body it is about to send means a beta is announced only when the field
  * it describes is present.
  *
- * Scope, stated plainly: this is application-layer only. The relay reaches
+ * Scope, stated plainly. This shapes the request *envelope* -- headers and client
+ * identity. Prompt content is the caller's and is forwarded unchanged: see
+ * `body.ts` for why synthesizing a system prompt would cost the caller cache
+ * hits and tokens while fooling nobody. Below the envelope, the relay reaches
  * upstream with rustls over HTTP/2, so the TLS ClientHello, the HTTP/2 settings
  * and the resulting JA4 are the relay's, not a real client's. No amount of header
  * work changes that, and this module does not pretend otherwise. Billing
@@ -32,15 +35,6 @@ import { readCloakProfile, type CloakProfileEnv } from "./profile";
 
 export type CloakEnv = CloakProfileEnv;
 
-export interface CloakDependencies {
-  /** Injected so tests pin the date rather than racing midnight. */
-  readonly today: () => string;
-}
-
-const runtimeDependencies: CloakDependencies = {
-  today: () => new Date().toISOString().slice(0, 10),
-};
-
 /**
  * Shape one request into Claude Code form.
  *
@@ -54,27 +48,25 @@ export async function projectClaudeRequest(
   request: Request,
   body: Uint8Array,
   env: CloakEnv,
-  dependencies: CloakDependencies = runtimeDependencies,
 ): Promise<ProjectedRequest> {
   const profile = readCloakProfile(env);
   const endpoint = classifyEndpoint(new URL(request.url).pathname);
   const identity = await deriveIdentity(request.headers.get("x-api-key"), profile);
 
-  const transformed = transformBody(body, {
+  const projected = transformBody(body, {
     endpoint,
     identity,
     contentType: request.headers.get("content-type"),
-    today: dependencies.today(),
   });
 
   const betaHeader = buildBetaHeader(
     request.headers.get("anthropic-beta"),
-    transformed.capabilities,
+    projected.capabilities,
     endpoint,
   );
 
   return {
     headers: buildCloakHeaders(request.headers, profile, betaHeader, endpoint),
-    body: transformed.body,
+    body: projected.body,
   };
 }

@@ -27,7 +27,7 @@ Both Workers project the caller's identity; what they project differs:
 | | `codex-worker/` | `claude-worker/` (this package) |
 | --- | --- | --- |
 | Caller identity | **Synthesized Codex identity** in headers and `client_metadata`. | **Claude Code profile**, rebuilt from a pinned version. |
-| Body | May receive injected `client_metadata` | Shaped: system identity, cache breakpoints, `metadata.user_id` |
+| Body | May receive injected `client_metadata` | Forwarded as-is except `metadata.user_id` |
 | Body ceiling variable | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
 
 Everything else — target parsing, the signed relay envelope, header hygiene,
@@ -55,18 +55,38 @@ What the cloak rebuilds (`src/cloak/`):
 | --- | --- |
 | Identity headers | `user-agent`, `x-app`, the `X-Stainless-*` family and `anthropic-version` are deleted then rewritten from the profile. The caller's real `x-claude-code-*` / `x-claude-remote-*` session values are dropped. |
 | `anthropic-beta` | Derived from the *transformed body*, so a beta is never announced without the field it describes. Unrecognised caller values are preserved at the tail. `count_tokens` gets its own profile. |
-| System prompt | The Claude Code identity line is prepended and a current-date reminder appended, each only if absent. |
-| Cache control | One breakpoint on the system prefix, or on `tools` when there is no system, so a stateless caller's large tool prefix is not re-tokenized every request. |
+| Prompt content | **Not touched.** `system`, `tools`, `messages` and `thinking` are forwarded exactly as received. |
 | `metadata.user_id` | A JSON *string* carrying `device_id` (64 hex), `account_uuid` (`""` for API-key auth, which is what a real client sends) and `session_id`, derived deterministically from the caller's key so one key is one stable device. |
 
 Never touched: `x-api-key` and `authorization`. Upstream authorization stays the
 caller's own, and this Worker holds no credential to substitute.
 
+### Why the prompt is left alone
+
+An earlier revision synthesized content: it prepended the Claude Code identity
+line, appended a `# currentDate` reminder, inserted a `clear_thinking_20251015`
+edit and planted cache breakpoints. That was wrong on three counts.
+
+- A block unshifted onto the head of `system` shifts the whole prompt prefix, so
+  the caller's own prompt cache misses — and a reminder carrying today's date
+  re-misses every midnight. The breakpoints added alongside could not repair
+  damage they were causing.
+- `clear_thinking_20251015` tells the API to drop thinking blocks: silent data
+  loss on a multi-turn request that owns its thinking history.
+- An identity line and a date reminder change what the model answers. A relay
+  that alters responses is not transparent, whatever its headers say.
+
+There is also no disguise to be had. Real Claude Code sends a large situated
+system prompt — tool inventory, working directory, git state — that differs on
+every request. One fixed sentence approximates none of it; it produces a request
+resembling neither a real client nor an honest API caller, and bills the caller
+tokens for the confusion. The envelope is where this cloak can be accurate, so
+that is where it stops.
+
 The transform is idempotent — `transform(transform(x)) === transform(x)` — so a
-request crossing more than one hop is shaped once. Without that property each
-pass would stack another identity block, another date reminder and another cache
-breakpoint, growing the prompt and invalidating the cached prefix the
-breakpoints exist to protect.
+request crossing more than one hop converges. It holds by construction now that
+nothing is inserted: `metadata.user_id` is derived from the caller's key, so a
+second pass rewrites it to the value it already held.
 
 Scope: application layer only. The relay reaches upstream with rustls over
 HTTP/2, so the TLS ClientHello, HTTP/2 settings and resulting JA4 are the
