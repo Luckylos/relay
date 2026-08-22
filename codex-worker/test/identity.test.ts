@@ -107,6 +107,25 @@ describe("projectIdentity", () => {
     expect(headers.get("x-codex-turn-metadata")).toBe('{"client":true}');
   });
 
+  it("derives window id and client request id from the thread id, not the session id", () => {
+    const incoming = new Headers({
+      "session-id": "client-session",
+      "thread-id": "client-thread",
+    });
+
+    const headers = projectIdentity(deterministicIdentity(incoming), incoming);
+
+    expect(headers.get("session-id")).toBe("client-session");
+    expect(headers.get("thread-id")).toBe("client-thread");
+    expect(headers.get("x-client-request-id")).toBe("client-thread");
+    expect(headers.get("x-codex-window-id")).toBe("client-thread:0");
+
+    const turnMetadata = JSON.parse(headers.get("x-codex-turn-metadata") ?? "{}");
+    expect(turnMetadata.window_id).toBe("client-thread:0");
+    expect(turnMetadata.session_id).toBe("client-session");
+    expect(turnMetadata.thread_id).toBe("client-thread");
+  });
+
   it("prefers hyphenated aliases and emits exactly one canonical identity header", () => {
     const incoming = new Headers();
     incoming.set("session_id", "underscore-session");

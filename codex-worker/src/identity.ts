@@ -135,8 +135,14 @@ export function resolveIdentity(
   const sessionId = clientSession || dependencies.randomUUID();
   const threadId = clientThread || sessionId;
   const installationId = clientInstallation || config.installationId;
-  const windowId = clientWindow || `${sessionId}:0`;
-  const requestId = clientRequestId || sessionId;
+  // Upstream formats the window id from the thread id, not the session id:
+  // `Session::current_window_id()` builds `{thread_id}:{window_number}`
+  // (codex-rs/core/src/session/mod.rs:3741) and codex-rs/core/tests/responses_headers.rs:109
+  // asserts `{thread_id}:0` for a fresh window.
+  const windowId = clientWindow || `${threadId}:0`;
+  // Upstream sends the thread id as x-client-request-id
+  // (codex-rs/codex-api/src/endpoint/responses.rs:89).
+  const requestId = clientRequestId || threadId;
   const betaFeatures = clientBeta || config.betaFeatures;
 
   return new ResolvedIdentity(
