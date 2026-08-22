@@ -121,8 +121,8 @@ back.
 
 ### Header hygiene
 
-`Authorization`, `Content-Type`, `Accept`, `Accept-Encoding`, and the Codex
-identity headers are signed and reach the upstream. Three groups never do:
+`Authorization`, `Content-Type`, `Accept`, and the Codex identity headers are
+signed and reach the upstream. Three groups never do:
 
 - request hop-by-hop and framing headers (`connection`, `content-length`,
   `host`, `transfer-encoding`, …), which describe a connection the relay does

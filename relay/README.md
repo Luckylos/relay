@@ -37,12 +37,18 @@ automatic gzip/deflate/brotli so no `accept-encoding` is injected.
 
 ## Request identity
 
-Identity projection is **not** in this crate. It lives in the Codex Worker
-(`../codex-worker/src/identity.ts`) as a single owner, so headers and body cannot
-drift apart across two language implementations. The relay forwards what the
-Worker signed, unmodified. The Claude Worker (`../claude-worker/`) projects no
-identity at all: its callers already send their own, so it forwards them
-untouched.
+Identity projection is **not** in this crate. It lives in each Worker as a single
+owner, so headers and body cannot drift apart across two language
+implementations. The relay forwards what the Worker signed, unmodified.
+
+- The Codex Worker (`../codex-worker/src/identity.ts`) projects one resolved
+  identity into both headers and the body's `client_metadata`, pinned to the
+  Codex CLI `0.149.0` profile.
+- The Claude Worker (`../claude-worker/src/cloak/`) rebuilds the client profile
+  headers and `anthropic-beta` from a pinned Claude Code profile, and leaves the
+  caller's prompt content untouched.
+
+Neither Worker substitutes the caller's upstream credential.
 
 ## Configuration (environment)
 
