@@ -30,6 +30,7 @@ export interface CloakProfileEnv {
   CLAUDE_CLOAK_RUNTIME_VERSION?: string;
   CLAUDE_CLOAK_OS?: string;
   CLAUDE_CLOAK_ARCH?: string;
+  CLAUDE_CLOAK_TIMEOUT_SECONDS?: string;
   /** Domain separator for derived identity. See identity.ts. */
   CLAUDE_CLOAK_IDENTITY_SALT?: string;
 }
@@ -42,6 +43,15 @@ export interface CloakProfile {
   readonly arch: string;
   readonly entrypoint: string;
   readonly anthropicVersion: string;
+  /**
+   * Seconds, as the string the SDK puts on the wire.
+   *
+   * `X-Stainless-Timeout` is `String(Math.trunc(options.timeout / 1000))`, and the
+   * CLI constructs its client with `timeout: API_TIMEOUT_MS ?? 600000`, so the
+   * default is `"600"`. Kept as a string because that is what is sent; deriving it
+   * from a number here would only invite a rounding difference.
+   */
+  readonly timeoutSeconds: string;
   readonly identitySalt: string;
 }
 
@@ -65,6 +75,7 @@ export const DEFAULT_CLOAK_PROFILE: CloakProfile = {
   arch: "x64",
   entrypoint: "cli",
   anthropicVersion: "2023-06-01",
+  timeoutSeconds: "600",
   identitySalt: "claude-worker-relay/v1",
 };
 
@@ -92,6 +103,10 @@ export function readCloakProfile(env: CloakProfileEnv): CloakProfile {
     arch: override(env.CLAUDE_CLOAK_ARCH, DEFAULT_CLOAK_PROFILE.arch),
     entrypoint: DEFAULT_CLOAK_PROFILE.entrypoint,
     anthropicVersion: DEFAULT_CLOAK_PROFILE.anthropicVersion,
+    timeoutSeconds: override(
+      env.CLAUDE_CLOAK_TIMEOUT_SECONDS,
+      DEFAULT_CLOAK_PROFILE.timeoutSeconds,
+    ),
     identitySalt: override(
       env.CLAUDE_CLOAK_IDENTITY_SALT,
       DEFAULT_CLOAK_PROFILE.identitySalt,

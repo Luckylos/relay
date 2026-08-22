@@ -74,7 +74,7 @@ export async function projectClaudeRequest(
   );
 
   return {
-    headers: buildCloakHeaders(request.headers, profile, betaHeader),
+    headers: buildCloakHeaders(request.headers, profile, betaHeader, endpoint),
     body: transformed.body,
   };
 }

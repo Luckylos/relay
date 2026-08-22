@@ -16,6 +16,7 @@
  * untouched; rewriting them would break the request, and this Worker holds no
  * credential of its own to substitute.
  */
+import type { ClaudeEndpoint } from "./beta";
 import type { CloakProfile } from "./profile";
 import { cloakUserAgent } from "./profile";
 
@@ -31,9 +32,18 @@ import { cloakUserAgent } from "./profile";
  *
  * `x-stainless-retry-count` is rebuilt rather than forwarded because a
  * caller-supplied retry count describes retries against a different endpoint.
- * `x-stainless-timeout` and `x-stainless-helper` are dropped outright: both are
- * emitted only under conditions this Worker cannot observe, so a fixed value
- * would be a tell in either direction.
+ *
+ * `x-stainless-timeout` is rebuilt, not dropped. An earlier revision dropped it
+ * on the theory that the emitting condition was unobservable here; reading the
+ * binary showed the opposite. The SDK emits it whenever the *call site* passed a
+ * timeout, and `messages.create` always passes one
+ * (`timeout: s ?? 600000`), while `countTokens` passes none at all. Both
+ * conditions are therefore fully determined by the endpoint, and a real
+ * `/v1/messages` request always carries `X-Stainless-Timeout: 600`.
+ *
+ * `x-stainless-helper` and `x-stainless-helper-method` stay dropped: those are
+ * attached by the SDK's streaming/tool-runner helpers based on which wrapper the
+ * caller invoked, which genuinely is not observable from the wire.
  */
 const MANAGED_HEADERS: readonly string[] = [
   "accept",
@@ -90,6 +100,7 @@ export function buildCloakHeaders(
   incoming: Headers,
   profile: CloakProfile,
   betaHeader: string | null,
+  endpoint: ClaudeEndpoint = "messages",
 ): Headers {
   const output = new Headers();
   for (const [name, value] of incoming) {
@@ -111,6 +122,17 @@ export function buildCloakHeaders(
   // Always "0": this Worker forwards once and does not retry, so any other value
   // would claim a retry that never happened.
   output.set("X-Stainless-Retry-Count", "0");
+
+  // The CLI builds its client with `dangerouslyAllowBrowser: true`, which is what
+  // makes the SDK emit this unconditionally. It looks like a header a proxy would
+  // never bother to send, which is exactly why omitting it is a tell.
+  output.set("anthropic-dangerous-direct-browser-access", "true");
+
+  // Present on /v1/messages, absent on count_tokens -- see the module note. The
+  // asymmetry is the authentic shape; sending it on both would be a new tell.
+  if (endpoint !== "count_tokens") {
+    output.set("X-Stainless-Timeout", profile.timeoutSeconds);
+  }
 
   if (betaHeader !== null) {
     output.set("anthropic-beta", betaHeader);

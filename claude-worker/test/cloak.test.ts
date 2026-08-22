@@ -20,7 +20,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { buildBetaHeader, parseBetaHeader, TOKEN_COUNTING_BETA } from "../src/cloak/beta";
+import {
+  buildBetaHeader,
+  type ClaudeEndpoint,
+  parseBetaHeader,
+  TOKEN_COUNTING_BETA,
+} from "../src/cloak/beta";
 import { transformBody } from "../src/cloak/body";
 import { classifyEndpoint } from "../src/cloak/endpoint";
 import { buildCloakHeaders, isManagedCloakHeader } from "../src/cloak/headers";
@@ -516,8 +521,12 @@ describe("body shaping", () => {
 });
 
 describe("cloak headers", () => {
-  function build(incoming: Record<string, string>, beta: string | null = null): Headers {
-    return buildCloakHeaders(new Headers(incoming), DEFAULT_CLOAK_PROFILE, beta);
+  function build(
+    incoming: Record<string, string>,
+    beta: string | null = null,
+    endpoint: ClaudeEndpoint = "messages",
+  ): Headers {
+    return buildCloakHeaders(new Headers(incoming), DEFAULT_CLOAK_PROFILE, beta, endpoint);
   }
 
   it("writes the full Stainless set", () => {
@@ -534,6 +543,37 @@ describe("cloak headers", () => {
     expect(headers.get("anthropic-version")).toBe("2023-06-01");
     expect(headers.get("x-app")).toBe("cli");
     expect(headers.get("accept")).toBe("application/json");
+    // The CLI constructs its client with dangerouslyAllowBrowser: true, so the
+    // SDK emits this on every request. Omitting it is the tell, not sending it.
+    expect(headers.get("anthropic-dangerous-direct-browser-access")).toBe("true");
+    // 600000ms client default -> trunc(600000/1000).
+    expect(headers.get("x-stainless-timeout")).toBe("600");
+  });
+
+  it("omits the timeout header on count_tokens only", () => {
+    // messages.create always resolves a timeout, so the SDK's conditional always
+    // fires; count_tokens passes no timeout at all, so the header is absent. The
+    // asymmetry is the authentic shape.
+    expect(build({}, null, "messages").get("x-stainless-timeout")).toBe("600");
+    expect(build({}, null, "count_tokens").has("x-stainless-timeout")).toBe(false);
+  });
+
+  it("rebuilds the timeout rather than forwarding the caller's", () => {
+    const headers = build({ "x-stainless-timeout": "30" });
+
+    expect(headers.get("x-stainless-timeout")).toBe("600");
+  });
+
+  it("drops the helper headers it cannot honestly reproduce", () => {
+    // Emitted only when a helper symbol is attached to the request, which this
+    // Worker cannot observe; a fixed value would be a tell in either direction.
+    const headers = build({
+      "x-stainless-helper": "messages.stream",
+      "x-stainless-helper-method": "stream",
+    });
+
+    expect(headers.has("x-stainless-helper")).toBe(false);
+    expect(headers.has("x-stainless-helper-method")).toBe(false);
   });
 
   it("replaces a caller's inconsistent profile rather than merging it", () => {
@@ -592,7 +632,12 @@ describe("cloak headers", () => {
 
   it("is idempotent", () => {
     const once = build({ "content-type": "application/json" }, "claude-code-20250219");
-    const twice = buildCloakHeaders(once, DEFAULT_CLOAK_PROFILE, "claude-code-20250219");
+    const twice = buildCloakHeaders(
+      once,
+      DEFAULT_CLOAK_PROFILE,
+      "claude-code-20250219",
+      "messages",
+    );
 
     expect([...twice].sort()).toEqual([...once].sort());
   });
