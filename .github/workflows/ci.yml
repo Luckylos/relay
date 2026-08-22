@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
 
-# Four independent jobs, deliberately not chained: `relay-server`, `codex-worker`
+# Four independent jobs, deliberately not chained: `relay`, `codex-worker`
 # and `claude-worker` must each stay buildable and testable on their own, so none
 # gates the others. That independence is the point of the layout -- each is a
 # separate deployment artifact with its own rollback.
@@ -15,11 +15,11 @@ on:
 # and each subtree keeps its own copy of the shared fixture. Drift between the two
 # Worker copies is precisely what it catches, so it installs and drives both.
 jobs:
-  relay-server:
+  relay:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: relay-server
+        working-directory: relay
     steps:
       - uses: actions/checkout@v4
 
@@ -29,7 +29,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: relay-server
+          workspaces: relay
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -80,7 +80,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: relay-server
+          workspaces: relay
 
       - uses: actions/setup-node@v4
         with:

@@ -1,7 +1,7 @@
 # Codex Worker Relay 最小实现计划
 
 > **归档（2026-08-21）：** 本文件是历史过程记录，不描述当前架构。
-> 计划已实施完成；`codex-egress-relay` 本机出口链路已退役，身份投影现由 Worker 单一持有。当前架构见 `README.md` 与 `relay-server/README.md`。
+> 计划已实施完成；`codex-egress-relay` 本机出口链路已退役，身份投影现由 Worker 单一持有。当前架构见 `README.md` 与 `relay/README.md`。
 
 > **项目路径：** `/opt/codex-worker-relay`  
 > **计划文件：** `/opt/codex-worker-relay/.hermes/plans/2026-08-19_235214_MINIMAL_IMPLEMENTATION_PLAN.md`  

@@ -3,10 +3,10 @@
 
 Why this exists
 ---------------
-The wire protocol is implemented four times: `relay-server/src/protocol/signing.rs`
+The wire protocol is implemented four times: `relay/src/protocol/signing.rs`
 (Rust server), `codex-worker/src/relay/{protocol,signing}.ts` and
 `claude-worker/src/relay/{protocol,signing}.ts` (two independently deployable
-Cloudflare Workers) and `relay-server/scripts/relay_probe.py` (operator probe).
+Cloudflare Workers) and `relay/scripts/relay_probe.py` (operator probe).
 Before the monorepo they lived in separate repositories with a hand-copied
 fixture, so an edit to one side could silently break HMAC verification with
 nothing turning red.
@@ -55,12 +55,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # The canonical fixture, plus the per-subtree copies each side reads.
 #
 # The copies are deliberate: `codex-worker/`, `claude-worker/` and
-# `relay-server/` must each stay independently extractable and runnable, so none
+# `relay/` must each stay independently extractable and runnable, so none
 # may read across subtree boundaries. Byte-identity is therefore a gated
 # invariant rather than a filesystem fact.
 CANONICAL_FIXTURE = ROOT / "protocol" / "relay-protocol-v1.json"
 FIXTURE_COPIES = (
-    ROOT / "relay-server" / "tests" / "fixtures" / "relay-protocol-v1.json",
+    ROOT / "relay" / "tests" / "fixtures" / "relay-protocol-v1.json",
     ROOT / "codex-worker" / "test" / "fixtures" / "relay-protocol-v1.json",
     ROOT / "claude-worker" / "test" / "fixtures" / "relay-protocol-v1.json",
 )
@@ -248,7 +248,7 @@ def run_ts(label: str, package: pathlib.Path, stdin: str, scratch: str) -> dict:
 
 def python_results(data: dict) -> dict:
     """Drive the operator probe's own canonicalization code."""
-    sys.path.insert(0, str(ROOT / "relay-server" / "scripts"))
+    sys.path.insert(0, str(ROOT / "relay" / "scripts"))
     import hashlib
     import hmac
 
@@ -338,7 +338,7 @@ def main() -> int:
             "rust": run(
                 "rust",
                 ["cargo", "run", "--quiet", "--bin", "conformance"],
-                ROOT / "relay-server",
+                ROOT / "relay",
                 stdin,
             ),
             "python": python_results(data),

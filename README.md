@@ -7,14 +7,14 @@ server that share one versioned wire protocol.
 codex-relay/
 ├── codex-worker/           Cloudflare Worker (TypeScript)  — Codex ingress
 ├── claude-worker/          Cloudflare Worker (TypeScript)  — Claude ingress
-├── relay-server/           Rust binaries                   — VPS egress
+├── relay/                  Rust binaries                   — VPS egress
 ├── protocol/               Canonical wire-protocol fixture + conformance gate
 └── docs/                   Design and implementation plans
 ```
 
 ## Why one repository
 
-The Workers and `relay-server/` implement two halves of the same signed
+The Workers and `relay/` implement two halves of the same signed
 protocol. Kept in separate repositories, a change to canonicalization or signing
 on one side could only be caught by hand-copying a fixture, and nothing turned
 red when the copies drifted. Here they share one history, one fixture and one CI
@@ -48,14 +48,14 @@ identical by design and gated by each package's own tests.
 ## Subtree independence (a hard constraint)
 
 **No package depends on any other, and none depends on `protocol/` at build or
-test time.** Each of `codex-worker/`, `claude-worker/` and `relay-server/` can be
+test time.** Each of `codex-worker/`, `claude-worker/` and `relay/` can be
 extracted on its own and will typecheck, test and build.
 
 Concretely:
 
 - No source, test, config or build file reaches outside its own subtree.
 - Each subtree keeps **its own copy** of the protocol fixture:
-  - `relay-server/tests/fixtures/relay-protocol-v1.json`
+  - `relay/tests/fixtures/relay-protocol-v1.json`
   - `codex-worker/test/fixtures/relay-protocol-v1.json`
   - `claude-worker/test/fixtures/relay-protocol-v1.json`
 - `protocol/relay-protocol-v1.json` is the canonical copy. Byte-identity with the
@@ -81,7 +81,7 @@ deployment silently degrades*.
 
 ```bash
 # Rust relay server
-cd relay-server
+cd relay
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
@@ -103,10 +103,10 @@ python3 protocol/conformance.py
 ## The conformance gate
 
 The wire protocol is implemented four times:
-`relay-server/src/protocol/signing.rs`,
+`relay/src/protocol/signing.rs`,
 `codex-worker/src/relay/{protocol,signing}.ts`,
 `claude-worker/src/relay/{protocol,signing}.ts`, and
-`relay-server/scripts/relay_probe.py`. `protocol/conformance.py` drives all four
+`relay/scripts/relay_probe.py`. `protocol/conformance.py` drives all four
 over shared vectors and requires byte-identical canonical requests and HMAC
 signatures.
 
@@ -141,6 +141,6 @@ from the package directory). The relay's `KeyRing` is keyed by id, so this needs
 no relay-side change; the tradeoff is that the relay cannot tell the two Workers
 apart and so cannot revoke or rate-limit them independently.
 
-`relay-server/systemd/codex-https-relay.service` intentionally records the live
+`relay/systemd/codex-https-relay.service` intentionally records the live
 deployment path (`/opt/codex-https-relay`), which is not this repository's
 location.

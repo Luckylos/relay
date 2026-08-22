@@ -1,5 +1,5 @@
 # Rust
-/relay-server/target/
+/relay/target/
 
 # Node -- one entry per independently installable Worker package.
 /codex-worker/node_modules/

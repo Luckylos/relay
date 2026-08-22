@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 
-# This subtree's own fixture, so the probe works when relay-server/ is used
+# This subtree's own fixture, so the probe works when relay/ is used
 # standalone. protocol/conformance.py enforces byte-identity with the Worker's
 # copy and with protocol/relay-protocol-v1.json.
 FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "tests/fixtures/relay-protocol-v1.json"
