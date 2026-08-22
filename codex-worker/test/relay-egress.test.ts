@@ -110,9 +110,8 @@ describe("Worker relay egress", () => {
       const forwarded = headerBlock(sent);
       expect(forwarded.get("authorization")).toBe("Bearer client-token");
       expect(forwarded.get("session-id")).toBeTruthy();
-      expect(forwarded.get("x-codex-installation-id")).toBe(
-        ENV.CODEX_PROXY_INSTALLATION_ID,
-      );
+      expect(forwarded.has("x-codex-installation-id")).toBe(false);
+      expect(forwarded.has("accept-encoding")).toBe(false);
 
       expect(JSON.parse(new TextDecoder().decode(await sent.arrayBuffer()))).toMatchObject({
         model: "gpt-5.6-terra",

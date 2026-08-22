@@ -163,8 +163,16 @@ The Worker ports the observable identity behavior of the Rust reference
 implementation:
 
 - canonical `user-agent`, `originator`, `session-id`, `thread-id`, request,
-  window, installation, beta-feature, turn-metadata, and `accept-encoding`
-  headers are projected consistently;
+  window, beta-feature, and turn-metadata headers are projected consistently,
+  pinned to the Codex CLI `0.149.0` profile;
+- `x-client-request-id` and `x-codex-window-id` are derived from the thread id,
+  matching `Session::current_window_id()`'s `{thread_id}:{window_number}`;
+- `accept-encoding` and `x-codex-installation-id` are deliberately not sent on a
+  main `/responses` turn: upstream never sets the former, and the latter is
+  compaction-only. The installation id still travels in the body's
+  `client_metadata`. Caller-supplied copies are stripped, not forwarded;
+- turn metadata is serialized with non-ASCII escaped to `\uXXXX` so it is a
+  valid header value;
 - genuine client-supplied Codex identity values are preserved;
 - duplicate casing/alias variants are removed before one canonical value is set;
 - JSON object bodies with `Content-Type: application/json` receive coherent

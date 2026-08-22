@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_ACCEPT_ENCODING,
   DEFAULT_BETA_FEATURES,
   DEFAULT_ORIGINATOR,
   DEFAULT_UA_VERSION,
@@ -10,6 +9,7 @@ import {
 import {
   HOP_BY_HOP_HEADERS,
   IDENTITY_HEADERS,
+  ResolvedIdentity,
   projectIdentity,
   resolveIdentity,
 } from "../src/identity";
@@ -36,8 +36,8 @@ function deterministicIdentity(incoming: Headers = new Headers()) {
 
 describe("identity configuration", () => {
   it("builds the captured Codex user-agent shape", () => {
-    expect(buildDefaultUserAgent("codex-tui", "0.145.0", "Debian 12.0.0; x86_64", "unknown")).toBe(
-      "codex-tui/0.145.0 (Debian 12.0.0; x86_64) unknown (codex-tui; 0.145.0)",
+    expect(buildDefaultUserAgent("codex-tui", "0.149.0", "Debian 12.0.0; x86_64", "unknown")).toBe(
+      "codex-tui/0.149.0 (Debian 12.0.0; x86_64) unknown (codex-tui; 0.149.0)",
     );
   });
 
@@ -46,7 +46,6 @@ describe("identity configuration", () => {
     expect(value.userAgent).toContain(`${DEFAULT_ORIGINATOR}/${DEFAULT_UA_VERSION}`);
     expect(value.originator).toBe(DEFAULT_ORIGINATOR);
     expect(value.betaFeatures).toBe(DEFAULT_BETA_FEATURES);
-    expect(value.acceptEncoding).toBe(DEFAULT_ACCEPT_ENCODING);
     expect(value.installationId).toBe(FIXED_INSTALLATION);
   });
 });
@@ -59,12 +58,13 @@ describe("projectIdentity", () => {
 
     expect(headers.get("user-agent")).toBe(config().userAgent);
     expect(headers.get("originator")).toBe(DEFAULT_ORIGINATOR);
-    expect(headers.get("accept-encoding")).toBe(DEFAULT_ACCEPT_ENCODING);
     expect(session).toBe("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     expect(headers.get("thread-id")).toBe(session);
     expect(headers.get("x-client-request-id")).toBe(session);
     expect(headers.get("x-codex-window-id")).toBe(`${session}:0`);
-    expect(headers.get("x-codex-installation-id")).toBe(FIXED_INSTALLATION);
+    // A real main `/responses` turn carries neither of these as HTTP headers.
+    expect(headers.has("accept-encoding")).toBe(false);
+    expect(headers.has("x-codex-installation-id")).toBe(false);
 
     const turnMetadata = JSON.parse(headers.get("x-codex-turn-metadata") ?? "{}");
     expect(turnMetadata).toMatchObject({
@@ -102,7 +102,7 @@ describe("projectIdentity", () => {
     expect(headers.get("thread-id")).toBe("client-thread");
     expect(headers.get("x-client-request-id")).toBe("client-request");
     expect(headers.get("x-codex-window-id")).toBe("client-window");
-    expect(headers.get("x-codex-installation-id")).toBe("client-installation");
+    expect(headers.has("x-codex-installation-id")).toBe(false);
     expect(headers.get("x-codex-beta-features")).toBe("client-beta");
     expect(headers.get("x-codex-turn-metadata")).toBe('{"client":true}');
   });
@@ -142,8 +142,8 @@ describe("projectIdentity", () => {
     const projectedIdentityNames = Array.from(headers.keys()).filter((name) =>
       IDENTITY_HEADERS.includes(name as (typeof IDENTITY_HEADERS)[number]),
     );
-    expect(projectedIdentityNames).toHaveLength(10);
-    expect(new Set(projectedIdentityNames).size).toBe(10);
+    expect(projectedIdentityNames).toHaveLength(8);
+    expect(new Set(projectedIdentityNames).size).toBe(8);
   });
 
   it("passes through ordinary headers and strips request hop-by-hop headers", () => {
@@ -177,13 +177,51 @@ describe("identity body projection", () => {
 
     expect(value).toMatchObject({ model: "gpt-5.6-terra", stream: true });
     expect(value.client_metadata).toMatchObject({
-      "x-codex-installation-id": headers.get("x-codex-installation-id"),
+      "x-codex-installation-id": FIXED_INSTALLATION,
       "x-codex-window-id": headers.get("x-codex-window-id"),
       thread_id: headers.get("thread-id"),
       session_id: headers.get("session-id"),
       turn_id: turnMetadata.turn_id,
       "x-codex-turn-metadata": headers.get("x-codex-turn-metadata"),
     });
+  });
+
+  it("keeps the installation id in the body even though no header is sent", () => {
+    const identity = deterministicIdentity();
+    const headers = projectIdentity(identity, new Headers());
+    const body = new TextEncoder().encode('{"model":"m"}');
+    const value = JSON.parse(
+      new TextDecoder().decode(identity.ensureBodyMetadata("application/json", body)),
+    );
+
+    expect(headers.has("x-codex-installation-id")).toBe(false);
+    expect(value.client_metadata["x-codex-installation-id"]).toBe(FIXED_INSTALLATION);
+  });
+
+  it("escapes non-ASCII turn metadata so it stays a valid header value", () => {
+    // Upstream serializes this blob with to_ascii_json_string
+    // (codex-rs/utils/string/src/json.rs:46) precisely so it survives an
+    // ASCII-only transport. Built directly rather than through a non-ASCII
+    // request header, which is a separate concern.
+    const identity = new ResolvedIdentity(
+      "codex-tui/0.149.0 (Debian 12.0.0; x86_64) unknown (codex-tui; 0.149.0)",
+      "codex-tui",
+      "session",
+      "t\u00e9st-\u4e2d\u6587",
+      "request",
+      "window",
+      FIXED_INSTALLATION,
+      "beta",
+      "turn",
+      1700000000000,
+    );
+
+    const raw = identity.turnMetadataJson();
+
+    expect(raw).toMatch(/^[\u0000-\u007f]*$/);
+    expect(raw).toContain("\\u00e9");
+    expect(raw).not.toContain("\u00e9");
+    expect(JSON.parse(raw).thread_id).toBe("t\u00e9st-\u4e2d\u6587");
   });
 
   it("leaves an existing client_metadata body byte-for-byte unchanged", () => {

@@ -44,11 +44,20 @@ function getHeader(headers: Headers, name: string): string {
   return headers.get(name) ?? "";
 }
 
+/// Upstream serializes the turn-metadata blob with `to_ascii_json_string`
+/// (codex-rs/utils/string/src/json.rs:46) so it stays parseable JSON while
+/// remaining safe for ASCII-only transports such as HTTP headers.
+function toAsciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[\u0080-\uffff]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 export class ResolvedIdentity {
   constructor(
     readonly userAgent: string,
     readonly originator: string,
-    readonly acceptEncoding: string,
     readonly sessionId: string,
     readonly threadId: string,
     readonly requestId: string,
@@ -90,7 +99,7 @@ export class ResolvedIdentity {
       return this.clientTurnMetadata;
     }
 
-    return JSON.stringify({
+    return toAsciiJson({
       installation_id: this.installationId,
       session_id: this.sessionId,
       thread_id: this.threadId,
@@ -148,7 +157,6 @@ export function resolveIdentity(
   return new ResolvedIdentity(
     userAgent,
     originator,
-    config.acceptEncoding,
     sessionId,
     threadId,
     requestId,
@@ -175,14 +183,26 @@ export function projectIdentity(identity: ResolvedIdentity, incoming: Headers): 
 
   output.set("user-agent", identity.userAgent);
   output.set("originator", identity.originator);
-  output.set("accept-encoding", identity.acceptEncoding);
   output.set("session-id", identity.sessionId);
   output.set("thread-id", identity.threadId);
   output.set("x-client-request-id", identity.requestId);
   output.set("x-codex-window-id", identity.windowId);
-  output.set("x-codex-installation-id", identity.installationId);
   output.set("x-codex-beta-features", identity.betaFeatures);
   output.set("x-codex-turn-metadata", identity.turnMetadataJson());
+
+  // Deliberately not emitted on a main `/responses` turn, matching upstream:
+  //
+  // - `accept-encoding`: upstream never sets it. codex-http-client builds reqwest
+  //   with only ["json", "rustls-tls-native-roots", "stream"], so none of the
+  //   gzip/brotli/zstd auto-negotiation features are compiled in and no header is
+  //   added. Request-body compression uses `content-encoding: zstd` instead.
+  // - `x-codex-installation-id`: inserted only on the compaction path
+  //   (codex-rs/core/src/client.rs:615, feeding ApiCompactClient::compact_input).
+  //   The main turn's header set is built by `build_responses_options`
+  //   (client.rs:1187), which never adds it; the value travels in the body's
+  //   `client_metadata`, exactly as codex-rs/core/tests/responses_headers.rs
+  //   asserts. Both stay in IDENTITY_HEADERS so a caller-supplied copy is
+  //   stripped rather than forwarded.
 
   return output;
 }
