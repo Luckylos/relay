@@ -10,7 +10,7 @@
  * bounded upstreams, no envelope forgery -- still hold.
  */
 import { describe, expect, it, vi } from "vitest";
-import worker, { type Env } from "../src/claude/index";
+import worker, { type Env } from "../src/index";
 import { RedirectError, rewriteLocation } from "../src/redirect";
 import { parseTarget, TargetError } from "../src/target";
 import { asUpstream } from "./support/relay-stub";

@@ -5,11 +5,15 @@ on:
     branches: [main]
   pull_request:
 
-# Three independent jobs, deliberately not chained: `relay-server` and `worker`
-# must each stay buildable and testable on their own, so neither gates the other.
-# `conformance` is the only job that spans both, and it exists because the wire
-# protocol is implemented three times (Rust, TypeScript, Python probe) and each
-# subtree keeps its own copy of the shared fixture.
+# Four independent jobs, deliberately not chained: `relay-server`, `codex-worker`
+# and `claude-worker` must each stay buildable and testable on their own, so none
+# gates the others. That independence is the point of the layout -- each is a
+# separate deployment artifact with its own rollback.
+#
+# `conformance` is the only job that spans them, and it exists because the wire
+# protocol is implemented four times (Rust, two TypeScript Workers, Python probe)
+# and each subtree keeps its own copy of the shared fixture. Drift between the two
+# Worker copies is precisely what it catches, so it installs and drives both.
 jobs:
   relay-server:
     runs-on: ubuntu-latest
@@ -31,11 +35,11 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
 
-  worker:
+  codex-worker:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: worker
+        working-directory: codex-worker
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +47,25 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: worker/package-lock.json
+          cache-dependency-path: codex-worker/package-lock.json
+
+      - run: npm ci
+      # typecheck + vitest (workerd pool) + wrangler dry-run build.
+      - run: npm run check
+
+  claude-worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: claude-worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: claude-worker/package-lock.json
 
       - run: npm ci
       # typecheck + vitest (workerd pool) + wrangler dry-run build.
@@ -64,17 +86,24 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: worker/package-lock.json
+          cache-dependency-path: |
+            codex-worker/package-lock.json
+            claude-worker/package-lock.json
 
-      - name: Install worker dependencies
-        working-directory: worker
+      - name: Install codex-worker dependencies
+        working-directory: codex-worker
         # esbuild is needed to bundle the TypeScript runner for plain Node.
+        run: npm ci
+
+      - name: Install claude-worker dependencies
+        working-directory: claude-worker
         run: npm ci
 
       - name: Cross-language protocol conformance
         # Verifies the per-subtree fixture copies are byte-identical to
-        # protocol/relay-protocol-v1.json, then drives all three
-        # implementations over shared vectors covering ASCII header ordering,
-        # SPACE/TAB-only whitespace folding, non-ASCII targets and empty
-        # header/body edge cases. Any divergence in canonical form or HMAC fails.
+        # protocol/relay-protocol-v1.json, then drives all four implementations
+        # over shared vectors covering ASCII header ordering, SPACE/TAB-only
+        # whitespace folding, non-ASCII targets and empty header/body edge cases.
+        # Any divergence in canonical form or HMAC fails -- including divergence
+        # between the two Workers' own copies of the protocol code.
         run: python3 protocol/conformance.py

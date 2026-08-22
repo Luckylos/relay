@@ -10,6 +10,13 @@ client → Worker → HTTPS relay (VPS) → dynamic HTTPS upstream:443
 
 > **Status:** the Worker side is complete and covered by tests. The relay is a
 > separate Rust service (`codex-https-relay`).
+>
+> **Package independence:** this directory is a standalone deployment
+> artifact. It carries its own copy of the relay pipeline, signing and target
+> code, so it installs, tests, builds and deploys without `claude-worker/` or
+> the repository root present. The Claude Worker carries its own copy; the two
+> are kept byte-compatible by `protocol/conformance.py`, which drives both
+> TypeScript implementations over the same vectors as the Rust relay.
 > End-to-end validation against a deployed relay and a real upstream is still
 > outstanding — see *Verification status*.
 
@@ -254,9 +261,10 @@ Verified:
 - `npm run check`: typecheck, full Vitest suite, Wrangler dry-run build;
 - relay protocol v1 signing against the shared fixture, byte-compatible with the
   Rust implementation;
-- ingress authentication: correct token accepted, missing/wrong token rejected
-  with `401` and **zero** egress calls, authentication ordered before target
-  parsing, fail-closed when unconfigured;
+- open ingress: no client credential required, and a client-supplied
+  `x-codex-relay-*` header cannot forge the relay envelope;
+- upstream allowlist: a disallowed target fails `400 invalid_target` with **zero**
+  egress calls, checked before the body is read;
 - header hygiene: platform and source-revealing headers stripped, relay control
   headers unforgeable, ingress token never forwarded;
 - relay egress: signed envelope to the fixed endpoint, identity and body
@@ -279,6 +287,19 @@ Not yet verified:
 A local adapter is no longer required: it existed only to inject the retired
 `X-Codex-Relay-Token`, and clients now need nothing beyond a base URL.
 
+## Deployment
+
+```bash
+npx wrangler deploy
+```
+
+Deployed as `codex-worker-relay`. `workers_dev` and `preview_urls` are both
+`false` so a deploy cannot resurrect a `workers.dev` hostname or preview URL
+alongside the dashboard-managed custom domain.
+
+Deploy order matters when relay changes are involved: relay first, then Workers.
+A Worker signing against a key the relay does not yet know fails closed.
+
 ## History
 
 Earlier revisions implemented direct Cloudflare `fetch()` egress and a SOCKS5
@@ -286,4 +307,4 @@ tunnel built on `cloudflare:sockets` + `startTls()`. Both are removed. The
 SOCKS5 path worked on a real workerd runtime, but keeping the client's traffic
 inside Cloudflare's address space was the wrong architecture for this service,
 and maintaining a hand-rolled HTTP/1.1 client to do it was cost without benefit.
-The design decision and rollout plan are recorded in `docs/`.
+The design decision and rollout plan are recorded in `../docs/`.

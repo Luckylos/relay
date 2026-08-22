@@ -1,0 +1,65 @@
+import { errorResponse, type RelayErrorType } from "../errors";
+
+/**
+ * Relay response control headers (spec section 8).
+ *
+ * These are an internal Worker<->relay channel and are consumed here: they must
+ * never continue to the client.
+ */
+const RESULT_HEADER = "x-codex-relay-result";
+const ERROR_HEADER = "x-codex-relay-error";
+
+/**
+ * How a relay-generated failure is presented to the client.
+ *
+ * Only three of the relay's machine codes describe something the client can act
+ * on -- an upstream that timed out, an upstream that failed, and a relay at
+ * capacity. Everything else names an internal gate (signature, nonce, protocol,
+ * body limit, config), and naming it would tell a caller exactly which check it
+ * tripped, so those all collapse to one opaque `502 relay_unavailable`.
+ */
+const RELAY_ERROR_MAP: ReadonlyMap<string, readonly [number, string, RelayErrorType]> = new Map([
+  ["relay_upstream_timeout", [504, "upstream request timed out", "upstream_timeout"] as const],
+  ["relay_upstream_error", [502, "upstream request failed", "upstream_error"] as const],
+  ["relay_forward_unavailable", [502, "upstream request failed", "upstream_error"] as const],
+  ["relay_busy", [503, "relay is at capacity", "relay_busy"] as const],
+]);
+
+const RELAY_UNAVAILABLE: readonly [number, string, RelayErrorType] = [
+  502,
+  "relay egress is unavailable",
+  "relay_unavailable",
+];
+
+/**
+ * Turn a relay reply into the response the client should see.
+ *
+ * The status code alone cannot answer "whose error is this": the relay's own 401
+ * is indistinguishable from an upstream rejecting a bad API key, and an upstream
+ * 502 is indistinguishable from a relay that could not connect. `Result` settles
+ * it, so this is the single point where that decision is made.
+ */
+export function attributeRelayResponse(
+  upstream: Response,
+  projectHeaders: (headers: Headers) => Headers,
+): Response {
+  const result = upstream.headers.get(RESULT_HEADER)?.trim().toLowerCase() ?? null;
+
+  // Missing attribution means an unknown or pre-upgrade relay. Reading that as
+  // `upstream` would pass a relay 401 straight through -- the exact leak the
+  // header exists to prevent -- so absence fails closed to "relay error".
+  if (result === "upstream") {
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: projectHeaders(upstream.headers),
+    });
+  }
+
+  const machineCode = upstream.headers.get(ERROR_HEADER)?.trim().toLowerCase() ?? "";
+  const [status, message, type] = RELAY_ERROR_MAP.get(machineCode) ?? RELAY_UNAVAILABLE;
+
+  // Built from scratch, never from the relay's body: the relay's own JSON names
+  // the internal gate that rejected the request.
+  return errorResponse(status, message, type);
+}

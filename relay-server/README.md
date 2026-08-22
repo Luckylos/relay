@@ -37,10 +37,12 @@ automatic gzip/deflate/brotli so no `accept-encoding` is injected.
 
 ## Request identity
 
-Identity projection is **not** in this crate. It lives in the Worker
-(`../worker/src/identity.ts`) as a single owner, so headers and body cannot
+Identity projection is **not** in this crate. It lives in the Codex Worker
+(`../codex-worker/src/identity.ts`) as a single owner, so headers and body cannot
 drift apart across two language implementations. The relay forwards what the
-Worker signed, unmodified.
+Worker signed, unmodified. The Claude Worker (`../claude-worker/`) projects no
+identity at all: its callers already send their own, so it forwards them
+untouched.
 
 ## Configuration (environment)
 

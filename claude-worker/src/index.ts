@@ -1,6 +1,14 @@
 /**
  * Claude ingress.
  *
+ * This package is a standalone deployment artifact: it carries its own copy of
+ * the relay pipeline, signing and target code, so it installs, tests, builds
+ * and deploys without the Codex package present. The two copies are kept in
+ * step by the cross-language conformance gate (protocol/conformance.py), which
+ * drives both TypeScript implementations over the same vectors as the Rust
+ * relay -- a shared source directory would have coupled the deployments
+ * instead.
+ *
  * Same egress guarantees as the Codex Worker -- open to clients, mandatory
  * relay, bounded upstreams -- with one deliberate difference: the client's own
  * identity is forwarded untouched.
@@ -16,7 +24,7 @@
  * source-revealing, and the relay's own control prefix, all stripped inside
  * `sendViaRelay`.
  */
-import { createRelayHandler, type PipelineEnv } from "../pipeline";
+import { createRelayHandler, type PipelineEnv } from "./pipeline";
 
 export interface Env extends PipelineEnv {
   CLAUDE_PROXY_MAX_BODY_BYTES?: string;

@@ -3,13 +3,21 @@
 
 Why this exists
 ---------------
-The wire protocol is implemented three times: `relay-server/src/protocol/signing.rs`
-(Rust server), `worker/src/relay/{protocol,signing}.ts` (Cloudflare Worker) and
-`relay-server/scripts/relay_probe.py` (operator probe). Before the monorepo they
-lived in separate repositories with a hand-copied fixture, so an edit to one side
-could silently break HMAC verification with nothing turning red.
+The wire protocol is implemented four times: `relay-server/src/protocol/signing.rs`
+(Rust server), `codex-worker/src/relay/{protocol,signing}.ts` and
+`claude-worker/src/relay/{protocol,signing}.ts` (two independently deployable
+Cloudflare Workers) and `relay-server/scripts/relay_probe.py` (operator probe).
+Before the monorepo they lived in separate repositories with a hand-copied
+fixture, so an edit to one side could silently break HMAC verification with
+nothing turning red.
 
-This gate drives all three implementations over the SAME generated vectors and
+The two Workers each carry their own copy of the protocol code on purpose: each
+package must install, test, build, deploy and roll back on its own, which a
+shared source directory would have prevented. That makes drift between the two
+copies the specific risk this gate exists to catch, so both are driven here --
+validating one copy and assuming the other matches would defeat the point.
+
+This gate drives all four implementations over the SAME generated vectors and
 requires byte-identical canonical requests and signatures. It is the structural
 replacement for "remember to copy the fixture".
 
@@ -46,14 +54,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # The canonical fixture, plus the per-subtree copies each side reads.
 #
-# The copies are deliberate: `worker/` and `relay-server/` must each stay
-# independently extractable and runnable, so neither may read across subtree
-# boundaries. Byte-identity is therefore a gated invariant rather than a
-# filesystem fact.
+# The copies are deliberate: `codex-worker/`, `claude-worker/` and
+# `relay-server/` must each stay independently extractable and runnable, so none
+# may read across subtree boundaries. Byte-identity is therefore a gated
+# invariant rather than a filesystem fact.
 CANONICAL_FIXTURE = ROOT / "protocol" / "relay-protocol-v1.json"
 FIXTURE_COPIES = (
     ROOT / "relay-server" / "tests" / "fixtures" / "relay-protocol-v1.json",
-    ROOT / "worker" / "test" / "fixtures" / "relay-protocol-v1.json",
+    ROOT / "codex-worker" / "test" / "fixtures" / "relay-protocol-v1.json",
+    ROOT / "claude-worker" / "test" / "fixtures" / "relay-protocol-v1.json",
+)
+
+# The two Worker packages, each driven through its own copy of the protocol code.
+TS_PACKAGES = (
+    ("ts-codex", ROOT / "codex-worker"),
+    ("ts-claude", ROOT / "claude-worker"),
 )
 
 
@@ -195,19 +210,20 @@ def run(label: str, argv: list[str], cwd: pathlib.Path, stdin: str) -> dict:
         raise SystemExit(f"FAIL: {label} runner emitted no JSON ({error})") from error
 
 
-def run_ts(worker: pathlib.Path, stdin: str, scratch: str) -> dict:
-    """Bundle then run the Worker's own protocol code on plain Node.
+def run_ts(label: str, package: pathlib.Path, stdin: str, scratch: str) -> dict:
+    """Bundle then run one Worker package's own protocol code on plain Node.
 
-    `worker/src` uses extensionless imports (tsconfig moduleResolution:
+    Each package's `src` uses extensionless imports (tsconfig moduleResolution:
     "Bundler"), which plain Node ESM cannot resolve. Bundling with the esbuild
     wrangler already ships keeps production import style untouched and still
-    exercises the exact source the Worker deploys.
+    exercises the exact source that package deploys.
     """
-    esbuild = worker / "node_modules" / ".bin" / "esbuild"
+    name = package.name
+    esbuild = package / "node_modules" / ".bin" / "esbuild"
     if not esbuild.is_file():
-        raise SystemExit(f"FAIL: esbuild missing at {esbuild} (run `npm ci` in worker/)")
+        raise SystemExit(f"FAIL: esbuild missing at {esbuild} (run `npm ci` in {name}/)")
 
-    bundle = pathlib.Path(scratch) / "conformance.mjs"
+    bundle = pathlib.Path(scratch) / f"conformance-{name}.mjs"
     build = subprocess.run(
         [
             str(esbuild),
@@ -218,16 +234,16 @@ def run_ts(worker: pathlib.Path, stdin: str, scratch: str) -> dict:
             "--target=node22",
             f"--outfile={bundle}",
         ],
-        cwd=worker,
+        cwd=package,
         capture_output=True,
         text=True,
         timeout=600,
     )
     if build.returncode != 0:
         sys.stderr.write(build.stderr)
-        raise SystemExit("FAIL: esbuild could not bundle the ts conformance runner")
+        raise SystemExit(f"FAIL: esbuild could not bundle {name}'s conformance runner")
 
-    return run("ts", ["node", str(bundle)], worker, stdin)
+    return run(label, ["node", str(bundle)], package, stdin)
 
 
 def python_results(data: dict) -> dict:
@@ -288,7 +304,7 @@ def compare(results: dict[str, dict]) -> int:
         print(f"FAIL {name}")
         for impl in sorted(canonicals):
             marker = "" if canonicals[impl] == reference["canonical"] else "  <-- differs"
-            print(f"       {impl:6} sig={signatures[impl]}{marker}")
+            print(f"       {impl:9} sig={signatures[impl]}{marker}")
         for impl in sorted(canonicals):
             if canonicals[impl] != canonicals[reference_name]:
                 print(f"       canonical[{reference_name}] = {canonicals[reference_name]!r}")
@@ -325,9 +341,11 @@ def main() -> int:
                 ROOT / "relay-server",
                 stdin,
             ),
-            "ts": run_ts(ROOT / "worker", stdin, scratch),
             "python": python_results(data),
         }
+        # Both Worker packages, each through its own copy of the protocol code.
+        for label, package in TS_PACKAGES:
+            results[label] = run_ts(label, package, stdin, scratch)
 
     failures = compare(results) + fixture_failures
     print()
@@ -335,7 +353,8 @@ def main() -> int:
         print(f"RESULT: {failures} conformance check(s) failed")
         return 1
     print(
-        f"RESULT: all {len(vectors())} vectors agree across rust / ts / python; "
+        f"RESULT: all {len(vectors())} vectors agree across "
+        f"{' / '.join(sorted(results))}; "
         f"{len(FIXTURE_COPIES)} fixture copies byte-identical"
     )
     return 0

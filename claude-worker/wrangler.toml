@@ -1,12 +1,14 @@
-# Claude ingress, deployed as its own Cloudflare Worker.
+# Claude ingress, deployed as its own Cloudflare Worker from its own package.
 #
-#   npx wrangler deploy -c wrangler.claude.toml
+#   cd claude-worker && npx wrangler deploy
 #
-# Separate Worker, shared source package: the relay envelope and signing code
-# must stay byte-identical with the Rust relay's conformance vectors, so both
-# entrypoints import one copy of it rather than keeping two in sync.
+# Self-contained by design: this package carries its own relay envelope and
+# signing code rather than importing the Codex package's, so either Worker can
+# be built, deployed and rolled back on its own. Byte-identity with the Rust
+# relay's conformance vectors is enforced by protocol/conformance.py, which
+# drives both TypeScript implementations over the same vectors.
 name = "claude-worker-relay"
-main = "src/claude/index.ts"
+main = "src/index.ts"
 compatibility_date = "2026-08-19"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = false
@@ -31,6 +33,6 @@ EGRESS_RELAY_KEY_ID = "w-20260820"
 ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.anthropic.com"
 
 # EGRESS_RELAY_SECRET is deliberately absent: it is a Worker secret, set with
-# `npx wrangler secret put EGRESS_RELAY_SECRET -c wrangler.claude.toml`, and it
+# `npx wrangler secret put EGRESS_RELAY_SECRET` from this directory, and it
 # must be the SAME value the Codex Worker uses, since both sign against the
 # relay's `w-20260820` key. See ../docs/https-relay-design-v1.md.

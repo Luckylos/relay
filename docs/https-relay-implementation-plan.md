@@ -11,7 +11,8 @@
 > `X-Codex-Relay-Token` / `INGRESS_AUTH_TOKEN` 的入口鉴权要求均已作废。客户端入口
 > 现为开放（无客户端凭据、无自定义 header），改由可选变量
 > `ALLOWED_UPSTREAM_HOSTS` 限制可达上游主机。现行契约见
-> `docs/https-relay-design-v1.md` 第 4.2 / 4.2.1 节与 `worker/README.md`。
+> `docs/https-relay-design-v1.md` 第 4.2 / 4.2.1 节与 `codex-worker/README.md`、
+> `claude-worker/README.md`。
 > 本文档保留原文作为实施历史，不再作为入口契约依据。
 
 原则：每个切片严格 RED → GREEN → REFACTOR；每个切片独立提交；旧 Rust 服务和当前生产入口始终保持可回滚。

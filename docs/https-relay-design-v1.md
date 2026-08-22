@@ -114,7 +114,8 @@ https://worker.example/api.openai.com/v1/responses?stream=true
 - 客户端只需把 `base_url` 指向 Worker，不需要任何自定义 header、不需要本地适配层。
 - 客户端自带上游 `Authorization`，Worker 原样转发；Worker 不内置共享上游 key，
   因此调用者只能消耗自己的额度。
-- 取消入口鉴权后，`x-codex-relay-*` 前缀剥离规则（`worker/src/headers.ts`）成为
+- 取消入口鉴权后，`x-codex-relay-*` 前缀剥离规则（两个 Worker 包各自的
+  `src/headers.ts`）成为
   阻止调用者伪造 Worker→Relay 信封的**唯一**机制，必须保留。
 - 原「客户端无法注入该 header 就必须先加本地适配层」的约束随之作废：适配层的唯一
   存在理由就是补这个 token。

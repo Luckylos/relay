@@ -1,10 +1,13 @@
 # Rust
 /relay-server/target/
 
-# Node
-/worker/node_modules/
-/worker/dist/
-/worker/.wrangler/
+# Node -- one entry per independently installable Worker package.
+/codex-worker/node_modules/
+/codex-worker/dist/
+/codex-worker/.wrangler/
+/claude-worker/node_modules/
+/claude-worker/dist/
+/claude-worker/.wrangler/
 
 # Python
 __pycache__/
