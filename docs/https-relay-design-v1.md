@@ -169,9 +169,7 @@ te
 trailer
 transfer-encoding
 upgrade
-cf-connecting-ip
-cf-ray
-cf-visitor
+cf-*            (every Cloudflare-injected header, by prefix)
 cdn-loop
 forwarded
 x-forwarded-for

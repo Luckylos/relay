@@ -63,8 +63,16 @@ export interface RelayHandlerSpec<E extends PipelineEnv> {
    * is correct when the real client already is what the upstream expects. A
    * thrown error is reported as an upstream failure, never as a client error:
    * failing to synthesize identity is this Worker's bug, not the caller's.
+   *
+   * May be async: deriving a stable identity requires WebCrypto digests, which
+   * are promise-based. A synchronous implementation remains valid, so the
+   * awaited union costs the purely-synchronous ingress nothing.
    */
-  readonly projectRequest?: (request: Request, body: Uint8Array, env: E) => ProjectedRequest;
+  readonly projectRequest?: (
+    request: Request,
+    body: Uint8Array,
+    env: E,
+  ) => ProjectedRequest | Promise<ProjectedRequest>;
 }
 
 /**
@@ -150,7 +158,7 @@ export function createRelayHandler<E extends PipelineEnv>(
         projected = { headers: request.headers, body };
       } else {
         try {
-          projected = spec.projectRequest(request, body, env);
+          projected = await spec.projectRequest(request, body, env);
         } catch {
           return errorResponse(502, "upstream request failed", "upstream_error");
         }

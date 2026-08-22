@@ -32,13 +32,18 @@ The duplication is the cost of that independence. Drift between the copies is
 therefore the specific risk the conformance gate exists to catch: it drives
 *both* TypeScript implementations, never one as a proxy for the other.
 
-The only intended behavioural difference between them:
+The intended behavioural differences between them:
 
 | | `codex-worker/` | `claude-worker/` |
 | --- | --- | --- |
-| Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Forwarded untouched.** The caller really is Claude Code and already sends correct `user-agent`, `anthropic-version`, `anthropic-beta`, `x-api-key`; rewriting it would replace correct identity with a guess |
-| Body | May gain `client_metadata` | Never modified |
+| Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Rebuilt from a pinned profile.** A caller may or may not be Claude Code, so one profile is applied to every request: identity headers, `anthropic-beta` derived from the body, and `metadata.user_id`. See `claude-worker/src/cloak/` |
+| Body | May gain `client_metadata` | Shaped: system identity line, cache breakpoints, `metadata.user_id` |
+| Upstream credential | Caller's `Authorization`, forwarded untouched | Caller's `x-api-key`, forwarded untouched |
 | Body ceiling | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
+
+Both projections are bounded the same way: they shape the request surface and
+never the caller's upstream credential. Neither Worker holds a credential of its
+own to substitute.
 
 Both deploy with `ALLOWED_UPSTREAM_HOSTS = ""` — every public HTTPS host is
 reachable, by decision. Each package's integration test asserts the binding is

@@ -22,12 +22,12 @@ space and defeat the reason the relay exists.
 
 ## How this differs from the Codex Worker
 
-One deliberate difference, and it is the whole reason the two exist separately:
+Both Workers project the caller's identity; what they project differs:
 
 | | `codex-worker/` | `claude-worker/` (this package) |
 | --- | --- | --- |
-| Caller identity | **Synthesized.** Callers are not Codex, so a coherent Codex identity is projected into headers and `client_metadata`. | **Forwarded untouched.** The caller really is Claude Code and already sends correct identity. |
-| Body | May receive injected `client_metadata` | Never modified |
+| Caller identity | **Synthesized Codex identity** in headers and `client_metadata`. | **Claude Code profile**, rebuilt from a pinned version. |
+| Body | May receive injected `client_metadata` | Shaped: system identity, cache breakpoints, `metadata.user_id` |
 | Body ceiling variable | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
 
 Everything else — target parsing, the signed relay envelope, header hygiene,
@@ -36,11 +36,61 @@ configuration — is identical, and is covered by this package's own tests. Both
 Workers also deploy with an empty `ALLOWED_UPSTREAM_HOSTS`, so upstream reach is
 no longer a difference between them either; see Configuration.
 
-Rewriting the client's `user-agent`, `anthropic-version`, `anthropic-beta` or
-`x-api-key` would replace correct identity with a guess, and injecting a body
-field would corrupt a request the client composed itself. So this Worker
-supplies no `projectRequest` at all; headers and body go upstream as sent, minus
-only the headers that must never travel (below).
+## Claude Code cloak
+
+Every request is shaped into Claude Code form, with no caller-detection branch.
+Trusting a caller's claim to be real Claude Code would make the presented
+identity depend on a signal the caller controls, and forwarding one caller's
+device and session identity while synthesizing another's puts several
+inconsistent machines behind a single credential.
+
+The profile is captured from the Bun-compiled `claude` native binary — CLI
+2.1.239, SDK 0.112.1 — and pinned as one unit, because CLI version, SDK version
+and beta set drift together between releases. Bumping one field alone yields a
+combination that never shipped.
+
+What the cloak rebuilds (`src/cloak/`):
+
+| Concern | Behaviour |
+| --- | --- |
+| Identity headers | `user-agent`, `x-app`, the `X-Stainless-*` family and `anthropic-version` are deleted then rewritten from the profile. The caller's real `x-claude-code-*` / `x-claude-remote-*` session values are dropped. |
+| `anthropic-beta` | Derived from the *transformed body*, so a beta is never announced without the field it describes. Unrecognised caller values are preserved at the tail. `count_tokens` gets its own profile. |
+| System prompt | The Claude Code identity line is prepended and a current-date reminder appended, each only if absent. |
+| Cache control | One breakpoint on the system prefix, or on `tools` when there is no system, so a stateless caller's large tool prefix is not re-tokenized every request. |
+| `metadata.user_id` | A JSON *string* carrying `device_id` (64 hex), `account_uuid` (`""` for API-key auth, which is what a real client sends) and `session_id`, derived deterministically from the caller's key so one key is one stable device. |
+
+Never touched: `x-api-key` and `authorization`. Upstream authorization stays the
+caller's own, and this Worker holds no credential to substitute.
+
+The transform is idempotent — `transform(transform(x)) === transform(x)` — so a
+request crossing more than one hop is shaped once. Without that property each
+pass would stack another identity block, another date reminder and another cache
+breakpoint, growing the prompt and invalidating the cached prefix the
+breakpoints exist to protect.
+
+Scope: application layer only. The relay reaches upstream with rustls over
+HTTP/2, so the TLS ClientHello, HTTP/2 settings and resulting JA4 are the
+relay's, not a real client's — no amount of header work changes that. Billing
+attribution (CCH and its signed headers) is excluded by decision, so requests
+are shaped like Claude Code without claiming its billing identity.
+
+Overrides, for a version bump without a code change:
+
+```text
+CLAUDE_CLOAK_CLI_VERSION      CLI version in the user-agent
+CLAUDE_CLOAK_SDK_VERSION      X-Stainless-Package-Version
+CLAUDE_CLOAK_RUNTIME_VERSION  X-Stainless-Runtime-Version
+CLAUDE_CLOAK_OS               X-Stainless-OS
+CLAUDE_CLOAK_ARCH             X-Stainless-Arch
+CLAUDE_CLOAK_IDENTITY_SALT    domain separator for derived identity
+```
+
+These are operator variables, deliberately not caller-controlled: letting a
+request choose its own version fields would let any caller invent an
+inconsistent client, which is the failure the pinned profile prevents. `OS` and
+`arch` default to Linux/x64 because that is what the egress host actually is — a
+request leaving a Linux VPS while claiming MacOS/arm64 asserts a machine that is
+not there.
 
 ## Request URL
 
@@ -76,8 +126,9 @@ curl --request POST \
 ```
 
 The only credential involved is the caller's own `x-api-key`, forwarded
-untouched. The Worker holds no shared upstream key, so a caller can never spend
-someone else's quota.
+untouched — the cloak rebuilds the client profile around it but never replaces
+it. The Worker holds no shared upstream key, so a caller can never spend someone
+else's quota.
 
 Two properties are deliberately retained despite the open ingress:
 
@@ -137,16 +188,19 @@ back.
 
 ### Header hygiene
 
-`x-api-key`, `anthropic-version`, `anthropic-beta`, `Content-Type`, `Accept` and
-the client's `user-agent` are signed and reach the upstream. Three groups never
-do:
+`x-api-key`, `Content-Type` and the cloak's rebuilt identity headers
+(`anthropic-version`, `anthropic-beta`, `user-agent`, `x-app`, `X-Stainless-*`)
+are signed and reach the upstream. Three groups never do:
 
 - request hop-by-hop and framing headers (`connection`, `content-length`,
   `host`, `transfer-encoding`, …), which describe a connection the relay does
   not reuse;
-- source-revealing headers (`cf-connecting-ip`, `cf-ray`, `cf-visitor`,
-  `cdn-loop`, `forwarded`, `x-forwarded-*`, `true-client-ip`, `x-real-ip`, …),
-  which would hand the upstream the real client IP and defeat the relay;
+- source-revealing headers — **every** `cf-` header by prefix, plus `cdn-loop`,
+  `forwarded`, `x-forwarded-*`, `true-client-ip`, `x-real-ip`, … — which would
+  hand the upstream the real client IP and defeat the relay. The prefix rule is
+  the rule and the named list is documentation: `cf-pseudo-ipv4` reached a real
+  upstream through this Worker because it was added to the platform after the
+  list was written, and Cloudflare can introduce another at any time;
 - anything under the `x-codex-relay-` prefix, so a client cannot forge an
   envelope field or its result attribution. With no ingress credential in front
   of the Worker, this prefix rule is the only thing standing between an open

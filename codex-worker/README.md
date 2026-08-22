@@ -127,9 +127,11 @@ identity headers are signed and reach the upstream. Three groups never do:
 - request hop-by-hop and framing headers (`connection`, `content-length`,
   `host`, `transfer-encoding`, …), which describe a connection the relay does
   not reuse;
-- source-revealing headers (`cf-connecting-ip`, `cf-ray`, `cf-visitor`,
-  `cdn-loop`, `forwarded`, `x-forwarded-*`, `true-client-ip`, `x-real-ip`, …),
-  which would hand the upstream the real client IP and defeat the relay;
+- source-revealing headers — **every** `cf-` header by prefix, plus `cdn-loop`,
+  `forwarded`, `x-forwarded-*`, `true-client-ip`, `x-real-ip`, … — which would
+  hand the upstream the real client IP and defeat the relay. The prefix rule is
+  the rule and the named list is documentation: `cf-pseudo-ipv4` reached a real
+  upstream because it was added to the platform after the list was written;
 - anything under the `x-codex-relay-` prefix, so a client cannot forge an
   envelope field or its result attribution. With no ingress credential in front
   of the Worker, this prefix rule is the only thing standing between an open

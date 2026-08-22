@@ -1,13 +1,19 @@
 /**
  * Claude ingress.
  *
- * The Codex Worker's job is to *manufacture* identity. This one's job is to not
- * touch it: the real client is Claude Code, which already sends a correct
- * `user-agent`, `anthropic-version`, `anthropic-beta` and `x-api-key`. So the
- * tests that matter are (a) all of that arrives upstream byte-for-byte,
- * (b) nothing Codex-shaped gets injected, (c) the body is not rewritten, and
- * (d) the egress guarantees the architecture depends on -- mandatory relay,
- * bounded upstreams, no envelope forgery -- still hold.
+ * Both Workers rewrite client identity; they disagree on *whose*. The Codex
+ * Worker manufactures a Codex client. This one presents a Claude Code client,
+ * rebuilt from one pinned profile on every request rather than forwarded from
+ * the caller -- a caller's own values describe its machine, its CLI build and
+ * its session, and mixing those with this Worker's produces a client that never
+ * shipped.
+ *
+ * So the tests that matter are (a) the identity headers and body are rebuilt to
+ * the profile, (b) the caller's upstream *credential* is still forwarded
+ * untouched, since this Worker holds none of its own, (c) nothing Codex-shaped
+ * leaks into a Claude request, and (d) the egress guarantees the architecture
+ * depends on -- mandatory relay, bounded upstreams, no envelope forgery -- still
+ * hold.
  */
 import { describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
@@ -54,11 +60,12 @@ function claudeCodeRequest(body = '{"model":"claude-sonnet-4-6","max_tokens":102
   });
 }
 
-describe("client identity passthrough", () => {
-  it("forwards the Anthropic auth and version headers untouched", async () => {
-    // `anthropic-version` is mandatory on every Anthropic API call and
-    // `x-api-key` is the caller's own credential. Dropping or rewriting either
-    // one turns every request into a 4xx.
+describe("Claude Code cloak", () => {
+  it("forwards the caller's credential while rebuilding the profile headers", async () => {
+    // The split that matters. `x-api-key` is the caller's own upstream
+    // credential and this Worker has none to substitute, so rewriting it would
+    // simply break the request. `anthropic-version` is the SDK's pinned API
+    // version, so it is rebuilt -- to the same value a real client sends.
     const spy = captureRelay();
     try {
       const response = await worker.fetch(claudeCodeRequest(), ENV, context());
@@ -67,25 +74,77 @@ describe("client identity passthrough", () => {
       const signed = signedHeaders(sentRequest(spy));
       expect(signed.get("x-api-key")).toBe("sk-ant-test-key");
       expect(signed.get("anthropic-version")).toBe("2023-06-01");
+      // Derived value first, then the caller's unrecognised beta at the tail:
+      // an unknown value is far more likely to be a feature newer than this
+      // Worker than an error worth discarding.
       expect(signed.get("anthropic-beta")).toBe(
-        "fine-grained-tool-streaming-2025-05-14",
+        "claude-code-20250219,fine-grained-tool-streaming-2025-05-14",
       );
     } finally {
       spy.mockRestore();
     }
   });
 
-  it("preserves the client's own user-agent instead of synthesizing one", async () => {
-    // The deliberate divergence from the Codex Worker, which overwrites
-    // user-agent with `codex-tui/...`. Here the client's identity is the
-    // correct one, so replacing it would substitute a guess for the truth.
+  it("rebuilds the client profile over the caller's stale one", async () => {
+    // The fixture sends 2.1.185 -- an older CLI than the pinned profile. Its
+    // values must not survive: a 2.1.185 user-agent arriving with this profile's
+    // SDK version would describe a combination that was never released.
     const spy = captureRelay();
     try {
       await worker.fetch(claudeCodeRequest(), ENV, context());
 
       const signed = signedHeaders(sentRequest(spy));
-      expect(signed.get("user-agent")).toBe("claude-cli/2.1.185 (external, cli)");
+      expect(signed.get("user-agent")).toBe("claude-cli/2.1.239 (external, cli)");
+      expect(signed.get("user-agent")).not.toMatch(/2\.1\.185/);
       expect(signed.get("user-agent")).not.toMatch(/codex/i);
+
+      // The whole Stainless set is rebuilt together, including the two headers a
+      // CPA-derived baseline omits (`lang` and `runtime`).
+      expect(signed.get("x-stainless-lang")).toBe("js");
+      expect(signed.get("x-stainless-runtime")).toBe("node");
+      expect(signed.get("x-stainless-package-version")).toBe("0.112.1");
+      expect(signed.get("x-stainless-runtime-version")).toBe("v26.3.0");
+      // Claims the host it actually runs on, not a more exotic one.
+      expect(signed.get("x-stainless-os")).toBe("Linux");
+      expect(signed.get("x-stainless-arch")).toBe("x64");
+      expect(signed.get("x-stainless-retry-count")).toBe("0");
+      expect(signed.get("x-app")).toBe("cli");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("drops the caller's real Claude Code session identity", async () => {
+    // A caller that is genuinely running Claude Code sends its own session and
+    // agent ids. Forwarding them alongside this Worker's derived identity would
+    // put two different machines behind one credential.
+    const spy = captureRelay();
+    try {
+      await worker.fetch(
+        new Request("https://w.example/api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-claude-code-session-id": "11111111-2222-3333-4444-555555555555",
+            "x-claude-code-agent-id": "agent-9",
+            "x-claude-remote-session-id": "remote-9",
+            "anthropic-client-platform": "desktop_app",
+          },
+          body: "{}",
+        }),
+        ENV,
+        context(),
+      );
+
+      const signed = signedHeaders(sentRequest(spy));
+      for (const name of [
+        "x-claude-code-session-id",
+        "x-claude-code-agent-id",
+        "x-claude-remote-session-id",
+        "anthropic-client-platform",
+      ]) {
+        expect(signed.has(name)).toBe(false);
+      }
     } finally {
       spy.mockRestore();
     }
@@ -114,20 +173,82 @@ describe("client identity passthrough", () => {
     }
   });
 
-  it("relays the request body byte-for-byte", async () => {
-    // The Codex path injects `client_metadata` into JSON bodies. Doing that to a
-    // Messages API request would corrupt a payload the client composed itself,
-    // and the signed body digest would then cover content the caller never sent.
+  it("shapes the body into Claude Code form", async () => {
     const body = '{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}';
     const spy = captureRelay();
     try {
       await worker.fetch(claudeCodeRequest(body), ENV, context());
 
-      const relayed = await sentRequest(spy).text();
-      expect(relayed).toBe(body);
-      expect(relayed).not.toContain("client_metadata");
+      const relayed = JSON.parse(await sentRequest(spy).text());
+      // The caller's own fields are untouched...
+      expect(relayed.model).toBe("claude-sonnet-4-6");
+      expect(relayed.max_tokens).toBe(1024);
+      expect(relayed.messages).toEqual([{ role: "user", content: "hi" }]);
+      // ...and the client's system identity is added ahead of them.
+      expect(relayed.system[0].text).toBe(
+        "You are Claude Code, Anthropic's official CLI for Claude.",
+      );
+      // `user_id` is a JSON string, not a nested object: an object here would be
+      // immediately distinguishable from a real request.
+      const userId = JSON.parse(relayed.metadata.user_id);
+      expect(userId.device_id).toMatch(/^[0-9a-f]{64}$/);
+      // Authentic for API-key auth: the real client sends "" with no OAuth
+      // account, so inventing a UUID would be less accurate, not more.
+      expect(userId.account_uuid).toBe("");
+      // Codex's body field must never appear on a Claude request.
+      expect(relayed.client_metadata).toBeUndefined();
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("is idempotent across a second hop", async () => {
+    // A request can traverse more than one hop of this Worker. Without the
+    // insertion guards each pass would stack another identity block, another
+    // date reminder and another cache breakpoint, growing the prompt and
+    // invalidating the cached prefix the breakpoints exist to protect.
+    const first = captureRelay();
+    let relayed: string;
+    let firstSigned: Map<string, string>;
+    try {
+      await worker.fetch(claudeCodeRequest(), ENV, context());
+      relayed = await sentRequest(first).text();
+      firstSigned = signedHeaders(sentRequest(first));
+    } finally {
+      first.mockRestore();
+    }
+
+    // The next hop receives exactly what this one sent upstream, so the replay is
+    // built from the signed block rather than from a hand-written header set.
+    // That also carries the caller's credential through unchanged, which matters:
+    // identity is derived from the API key, so a replay that dropped it would
+    // derive a different device and session and fail for the wrong reason.
+    const replayHeaders = new Headers();
+    for (const [name, value] of firstSigned) {
+      replayHeaders.set(name, value);
+    }
+
+    const second = captureRelay();
+    try {
+      await worker.fetch(
+        new Request("https://w.example/api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: replayHeaders,
+          body: relayed,
+        }),
+        ENV,
+        context(),
+      );
+
+      // Body byte-identical: no stacked identity block, date reminder or
+      // breakpoint.
+      expect(await sentRequest(second).text()).toBe(relayed);
+      // And the rebuilt headers converge too, including the beta list.
+      expect(Object.fromEntries(signedHeaders(sentRequest(second)))).toEqual(
+        Object.fromEntries(firstSigned),
+      );
+    } finally {
+      second.mockRestore();
     }
   });
 

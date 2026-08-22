@@ -9,29 +9,39 @@
  * relay -- a shared source directory would have coupled the deployments
  * instead.
  *
- * Same egress guarantees as the Codex Worker -- open to clients, mandatory
- * relay, bounded upstreams -- with one deliberate difference: the client's own
- * identity is forwarded untouched.
+ * Same egress guarantees as the Codex Worker: open to clients, mandatory relay,
+ * bounded upstreams. Both ingresses also project the caller's identity, but for
+ * opposite reasons, and the two projections must not be confused.
  *
- * The Codex Worker synthesizes identity because its callers are not Codex and
- * the upstream channel expects Codex-shaped traffic. Here the real client *is*
- * Claude Code, and it already sends its own `user-agent`, `anthropic-version`,
- * `anthropic-beta` and `x-api-key`. Rewriting any of that would replace correct
- * identity with a guess, and injecting a body field would corrupt a request the
- * client composed itself. Omitting `projectRequest` is therefore the whole
- * difference between the two ingresses: headers and body go upstream as sent,
- * with only the headers that must not travel removed -- hop-by-hop, Cloudflare
- * source-revealing, and the relay's own control prefix, all stripped inside
- * `sendViaRelay`.
+ * The Codex Worker projects Codex identity because its callers are not Codex.
+ * Here the caller may well be Claude Code, and this ingress *still* rebuilds the
+ * client profile -- see src/cloak. Forwarding the caller's own profile was the
+ * previous behaviour and it does not hold up: an arbitrary caller sends an
+ * arbitrary mix of CLI version, SDK version, OS, arch and session identity, so
+ * traffic through one credential presents as several inconsistent machines. One
+ * pinned profile, rebuilt on every request, presents one coherent client.
+ *
+ * The rebuild is bounded on purpose. It never touches `x-api-key` or
+ * `authorization` -- upstream authorization stays the caller's, and this Worker
+ * holds no credential to substitute. It shapes only the request surface: identity
+ * headers, `anthropic-beta` derived from the body's own capabilities, the system
+ * prompt's identity line, cache breakpoints and `metadata.user_id`. It is
+ * idempotent, so a request crossing more than one hop is shaped once, not twice.
+ *
+ * Transport is out of scope and cannot be brought in: the relay reaches upstream
+ * with rustls over HTTP/2, so the TLS and HTTP/2 fingerprints are the relay's.
+ * Billing attribution is excluded by decision.
  */
+import { projectClaudeRequest, type CloakEnv } from "./cloak";
 import { createRelayHandler, type PipelineEnv } from "./pipeline";
 
-export interface Env extends PipelineEnv {
+export interface Env extends PipelineEnv, CloakEnv {
   CLAUDE_PROXY_MAX_BODY_BYTES?: string;
 }
 
 const worker = createRelayHandler<Env>({
   maxBodyBytes: (env) => env.CLAUDE_PROXY_MAX_BODY_BYTES,
+  projectRequest: (request, body, env) => projectClaudeRequest(request, body, env),
 });
 
 export default worker satisfies ExportedHandler<Env>;

@@ -36,12 +36,17 @@ export const REQUEST_HOP_BY_HOP_HEADERS = [
  * the request. Forwarding these would hand the upstream the real client IP and
  * the Cloudflare trace chain, defeating that property, so they are stripped even
  * though they are not hop-by-hop in the RFC sense.
+ *
+ * Named entries here are the non-`cf-` ones plus the `cf-` headers worth
+ * documenting; every `cf-` header is additionally stripped by prefix below, so
+ * this list does not have to stay exhaustive.
  */
 export const SOURCE_REVEALING_HEADERS = [
   "cdn-loop",
   "cf-connecting-ip",
   "cf-connecting-ipv6",
   "cf-ipcountry",
+  "cf-pseudo-ipv4",
   "cf-ray",
   "cf-visitor",
   "cf-worker",
@@ -53,6 +58,18 @@ export const SOURCE_REVEALING_HEADERS = [
   "x-forwarded-proto",
   "x-real-ip",
 ] as const;
+
+/**
+ * Every Cloudflare-injected header, matched by prefix.
+ *
+ * A fixed list was not enough: `cf-pseudo-ipv4` reached a real upstream through
+ * this Worker because it was added to the platform after the list was written.
+ * Cloudflare can introduce a new `cf-` header at any time, and each one is a
+ * client-describing value that defeats the relay's whole purpose, so the prefix
+ * is the rule and the list above is only documentation. Nothing legitimate for
+ * an upstream ever arrives under this prefix.
+ */
+export const CLOUDFLARE_HEADER_PREFIX = "cf-";
 
 /** Control headers are reserved for the relay envelope itself. */
 export const RELAY_CONTROL_PREFIX = "x-codex-relay-";
@@ -75,7 +92,11 @@ const STRIPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set<string>([
  */
 export function isStrippedRequestHeader(name: string): boolean {
   const lower = name.toLowerCase();
-  return STRIPPED_REQUEST_HEADERS.has(lower) || lower.startsWith(RELAY_CONTROL_PREFIX);
+  return (
+    STRIPPED_REQUEST_HEADERS.has(lower) ||
+    lower.startsWith(RELAY_CONTROL_PREFIX) ||
+    lower.startsWith(CLOUDFLARE_HEADER_PREFIX)
+  );
 }
 
 export function projectResponseHeaders(incoming: Headers): Headers {
