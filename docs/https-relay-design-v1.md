@@ -379,7 +379,8 @@ CODEX_PROXY_MAX_BODY_BYTES         # 默认 10485760
 CODEX_RELAY_HEADER_TIMEOUT_MS      # 默认 120000
 ```
 
-`INGRESS_AUTH_TOKEN` 已于 2026-08-21 移除，见 4.2。
+`INGRESS_AUTH_TOKEN` 已于 2026-08-21 从代码移除（见 4.2）；其残留的 Cloudflare
+Worker secret 绑定已于 2026-08-22 删除，两个 Worker 现在只保留 `EGRESS_RELAY_SECRET`。
 
 任一必需项缺失时目标请求返回 fail-closed 配置错误；不得调用 direct `fetch(target)`。
 
