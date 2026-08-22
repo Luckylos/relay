@@ -12,12 +12,16 @@ preview_urls = false
 EGRESS_RELAY_URL = "https://relay.543822.xyz/v1/forward"
 EGRESS_RELAY_KEY_ID = "w-20260820"
 
-# Upstreams this Worker may reach. The ingress is open by design, so this is what
-# keeps it from being an open proxy: egress leaves the relay's VPS address, and
-# abuse would be attributed there. Pinned here rather than left unset so a deploy
-# cannot silently turn the Worker into an any-host proxy.
+# Upstream allowlist, deliberately left EMPTY: every public HTTPS host is
+# reachable. This is an explicit operator decision, not a dropped value -- the
+# integration test asserts the binding is empty so it cannot be narrowed by
+# accident, and cannot be emptied by accident either.
 #
-# Costs callers nothing -- it is not a client-side setting. A leading dot also
-# matches subdomains. Widen by adding hosts; clear the value to restore
-# any-public-host behaviour.
-ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"
+# What remains between this Worker and private-range egress is the relay's
+# post-DNS SSRF policy, not this variable. Egress leaves the relay's VPS
+# address, so abuse of the open path is attributed there.
+#
+# To re-narrow: list hosts comma-separated, a leading dot also matching
+# subdomains (e.g. "ps.air-outer.com,.openai.com"). The enforcement code and its
+# unit tests stay in place either way; only this value changes.
+ALLOWED_UPSTREAM_HOSTS = ""

@@ -28,12 +28,13 @@ One deliberate difference, and it is the whole reason the two exist separately:
 | --- | --- | --- |
 | Caller identity | **Synthesized.** Callers are not Codex, so a coherent Codex identity is projected into headers and `client_metadata`. | **Forwarded untouched.** The caller really is Claude Code and already sends correct identity. |
 | Body | May receive injected `client_metadata` | Never modified |
-| Upstream allowlist | `ps.air-outer.com,.openai.com` | `ps.air-outer.com,.anthropic.com` |
 | Body ceiling variable | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
 
 Everything else — target parsing, the signed relay envelope, header hygiene,
 redirect rewriting, bounded bodies, error mapping, fail-closed relay
-configuration — is identical, and is covered by this package's own tests.
+configuration — is identical, and is covered by this package's own tests. Both
+Workers also deploy with an empty `ALLOWED_UPSTREAM_HOSTS`, so upstream reach is
+no longer a difference between them either; see Configuration.
 
 Rewriting the client's `user-agent`, `anthropic-version`, `anthropic-beta` or
 `x-api-key` would replace correct identity with a guess, and injecting a body
@@ -83,10 +84,14 @@ Two properties are deliberately retained despite the open ingress:
 - Every client-supplied `x-codex-relay-*` request header is stripped before
   egress (`src/headers.ts`), so an open caller still cannot forge the
   Worker→relay envelope or its result attribution.
-- `ALLOWED_UPSTREAM_HOSTS` bounds *what* an open caller can reach. Being open to
-  callers is acceptable; being an open proxy to arbitrary hosts is not, because
-  the traffic egresses from the relay's VPS address and abuse is attributed
-  there.
+- `ALLOWED_UPSTREAM_HOSTS` can bound *what* an open caller reaches, but the
+  deployed value is empty: any public HTTPS host is reachable. That is a
+  deliberate operator decision, and it means abuse of this Worker egresses from
+  the relay's VPS address and is attributed there. Target *shape* is still
+  enforced — HTTPS only, hostname only, no IP literals, no `localhost`.
+
+The rules below apply whenever a list *is* configured; with the allowlist empty
+only the redirect row's non-host checks can fire:
 
 | Condition | Status | `type` |
 | --- | --- | --- |
@@ -208,12 +213,31 @@ ALLOWED_UPSTREAM_HOSTS    comma-separated upstream hostname allowlist
 CLAUDE_PROXY_MAX_BODY_BYTES  request body ceiling in bytes
 ```
 
-`ALLOWED_UPSTREAM_HOSTS` is matched case-insensitively against the exact
-hostname; a leading dot (`.anthropic.com`) also matches subdomains, and the
-parent domain itself. There are no wildcards, and a suffix entry cannot match a
-sibling domain (`.anthropic.com` does not match `evil-anthropic.com`). The same
-rule is applied to upstream redirects, so a redirect cannot reach a host a
-client could not have requested directly.
+The deployed value is empty, which permits every public HTTPS host:
+
+```text
+ALLOWED_UPSTREAM_HOSTS = ""
+```
+
+That is an accepted trade-off for this deployment, not an oversight: the
+integration test asserts the binding is empty, so the open contract cannot be
+narrowed by accident — and the enforcement code plus its unit tests remain in
+place, so re-narrowing is a one-value change:
+
+```text
+ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.anthropic.com"
+```
+
+When a list is set it is matched case-insensitively against the exact hostname;
+a leading dot (`.anthropic.com`) also matches subdomains, and the parent domain
+itself. There are no wildcards, and a suffix entry cannot match a sibling domain
+(`.anthropic.com` does not match `evil-anthropic.com`). The same rule is applied
+to upstream redirects, so a redirect cannot reach a host a client could not have
+requested directly.
+
+Understand what empty costs: this Worker is reachable by anyone and can be
+pointed at any public HTTPS host, with egress attributed to the relay's address.
+Set a list before sharing the endpoint.
 
 `wrangler.toml` holds only the non-secret URL and key id, so a deploy cannot
 silently lose them. The signing secret is set out of band and appears in no

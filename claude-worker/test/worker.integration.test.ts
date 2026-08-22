@@ -20,8 +20,8 @@ describe("Worker integration entrypoint", () => {
         default: { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
       };
       // No credential: real bindings must relay an unadorned client request.
-      // The host must be one the production ALLOWED_UPSTREAM_HOSTS permits,
-      // since this suite deliberately runs against the real wrangler.toml vars.
+      // Runs against the real wrangler.toml vars on purpose, so this covers the
+      // deployed configuration and not just a hand-built env object.
       const response = await workerExports.default.fetch(
         "https://relay.example/api.anthropic.com/v1/models?limit=1",
       );
@@ -44,24 +44,39 @@ describe("Worker integration entrypoint", () => {
     }
   });
 
-  it("enforces the configured upstream allowlist through the real bindings", async () => {
-    // Guards the deployed configuration itself, not just the code: if
-    // ALLOWED_UPSTREAM_HOSTS were dropped from wrangler.toml, the Worker would
-    // silently become an open proxy egressing from the relay's address.
-    const upstream = vi.spyOn(globalThis, "fetch");
+  it("relays an unlisted host, holding the deployed open-egress decision in place", async () => {
+    // Guards the deployed configuration itself, not just the code. The allowlist
+    // is deliberately empty, so any public HTTPS host must be reachable; if
+    // someone narrowed ALLOWED_UPSTREAM_HOSTS without deciding to, this fails.
+    // The paired unit tests still cover enforcement when a list IS configured,
+    // so clearing the value costs no coverage of that path.
+    const upstream = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(asUpstream(new Response(null, { status: 204 })));
     try {
+      const bindings = env as unknown as {
+        ALLOWED_UPSTREAM_HOSTS?: string;
+        EGRESS_RELAY_URL: string;
+      };
+      expect((bindings.ALLOWED_UPSTREAM_HOSTS ?? "").trim()).toBe("");
+
       const workerExports = exports as unknown as {
         default: { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
       };
       const response = await workerExports.default.fetch(
-        "https://relay.example/not-allowed.example/v1/models",
+        "https://relay.example/not-listed.example/v1/models",
       );
 
-      expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({
-        error: { message: "invalid target", type: "invalid_target" },
-      });
-      expect(upstream).not.toHaveBeenCalled();
+      expect(response.status).toBe(204);
+      // Open on which hosts, never on which path: an unlisted target must still
+      // leave through the signed relay, not straight out of the Worker.
+      const sent = upstream.mock.calls[0]?.[0] as Request;
+      expect(sent.url).toBe(bindings.EGRESS_RELAY_URL);
+      expect(
+        new TextDecoder().decode(
+          base64UrlDecode(sent.headers.get("x-codex-relay-target") ?? ""),
+        ),
+      ).toBe("https://not-listed.example/v1/models");
     } finally {
       upstream.mockRestore();
     }

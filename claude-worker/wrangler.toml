@@ -23,14 +23,19 @@ preview_urls = false
 EGRESS_RELAY_URL = "https://relay.543822.xyz/v1/forward"
 EGRESS_RELAY_KEY_ID = "w-20260820"
 
-# Upstreams this Worker may reach. The ingress is open by design, so this is what
-# keeps it from being an open proxy: egress leaves the relay's VPS address, and
-# abuse would be attributed there. Anthropic-shaped hosts only -- there is no
-# reason for a Claude ingress to reach an OpenAI endpoint.
+# Upstream allowlist, deliberately left EMPTY: every public HTTPS host is
+# reachable. This is an explicit operator decision, not a dropped value -- the
+# integration test asserts the binding is empty so it cannot be narrowed by
+# accident, and cannot be emptied by accident either.
 #
-# Costs callers nothing; it is not a client-side setting. A leading dot also
-# matches subdomains. Clear the value to restore any-public-host behaviour.
-ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.anthropic.com"
+# What remains between this Worker and private-range egress is the relay's
+# post-DNS SSRF policy, not this variable. Egress leaves the relay's VPS
+# address, so abuse of the open path is attributed there.
+#
+# To re-narrow: list hosts comma-separated, a leading dot also matching
+# subdomains (e.g. "ps.air-outer.com,.anthropic.com"). The enforcement code and
+# its unit tests stay in place either way; only this value changes.
+ALLOWED_UPSTREAM_HOSTS = ""
 
 # EGRESS_RELAY_SECRET is deliberately absent: it is a Worker secret, set with
 # `npx wrangler secret put EGRESS_RELAY_SECRET` from this directory, and it

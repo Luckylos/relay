@@ -39,7 +39,11 @@ The only intended behavioural difference between them:
 | Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Forwarded untouched.** The caller really is Claude Code and already sends correct `user-agent`, `anthropic-version`, `anthropic-beta`, `x-api-key`; rewriting it would replace correct identity with a guess |
 | Body | May gain `client_metadata` | Never modified |
 | Body ceiling | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
-| Allowed upstreams | `ps.air-outer.com,.openai.com` | `ps.air-outer.com,.anthropic.com` |
+
+Both deploy with `ALLOWED_UPSTREAM_HOSTS = ""` — every public HTTPS host is
+reachable, by decision. Each package's integration test asserts the binding is
+empty so the open contract cannot be narrowed by accident, and the enforcement
+code and its unit tests stay in place so re-narrowing is a one-value change.
 
 Everything else — mandatory relay egress, signed envelopes, target validation,
 header stripping, bounded bodies, redirect rewriting, error mapping — is

@@ -127,6 +127,8 @@ https://worker.example/api.openai.com/v1/responses?stream=true
 
 ### 4.2.1 上游 allowlist（可选变量）
 
+语法示例（非当前部署值，当前部署见本节末）：
+
 ```text
 ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"
 ```
@@ -136,8 +138,13 @@ ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"
 - 无通配符；后缀条目不会匹配兄弟域（`.openai.com` 不匹配 `evil-openai.com`）。
 - 命中失败在读取 body 和任何 egress 之前返回 `400 invalid_target`，fail-closed。
 - 同一规则应用于上游 redirect 重写：redirect 不得抵达客户端本来无法直接请求的主机。
-- 未设置或为空 = 保持任意公网 HTTPS 主机的原行为。这是回滚路径，但多人共享部署时
-  应当实际配置，否则 Worker 就是公开通用代理。
+- 未设置或为空 = 保持任意公网 HTTPS 主机的原行为。
+
+**当前部署决定为留空**：两个 Worker 的 `ALLOWED_UPSTREAM_HOSTS = ""`，全部公网
+HTTPS 主机放行。这是明确的运维取舍而非配置丢失——各包的 integration test 断言该
+binding 为空，因此这条开放契约不会被误收窄；enforcement 代码与其单测保留原状，
+需要重新收窄时只改这一个值。代价是：入口对任何人开放且可指向任意公网主机，出口
+仍归属 Relay 所在 VPS 地址；对外共享该端点前应当配置 allowlist。
 
 ### 4.3 请求头投影
 
@@ -367,7 +374,7 @@ Worker 对 `Location`：
 EGRESS_RELAY_URL                   # 变量，必需，固定 https://.../v1/forward
 EGRESS_RELAY_KEY_ID                # 变量或 secret，必需
 EGRESS_RELAY_SECRET                # secret，必需
-ALLOWED_UPSTREAM_HOSTS             # 变量，可选；未设=任意公网 HTTPS 主机
+ALLOWED_UPSTREAM_HOSTS             # 变量，可选；未设/留空=任意公网 HTTPS 主机（当前部署留空）
 CODEX_PROXY_MAX_BODY_BYTES         # 默认 10485760
 CODEX_RELAY_HEADER_TIMEOUT_MS      # 默认 120000
 ```

@@ -44,9 +44,9 @@ here as well as by the relay's post-DNS SSRF policy — the edge check keeps
 requests that must always fail from consuming relay capacity.
 
 Which upstreams are reachable is governed by the optional
-`ALLOWED_UPSTREAM_HOSTS` variable (see Configuration). When it is unset, any
-public HTTPS hostname is reachable and the relay's DNS-time address policy is
-the only thing preventing private-range egress.
+`ALLOWED_UPSTREAM_HOSTS` variable (see Configuration). **The deployed value is
+empty by decision**, so any public HTTPS hostname is reachable and the relay's
+DNS-time address policy is the only thing preventing private-range egress.
 
 ## Client authentication
 
@@ -71,10 +71,14 @@ Two properties are deliberately retained despite the open ingress:
 - Every client-supplied `x-codex-relay-*` request header is stripped before
   egress (`src/headers.ts`), so an open caller still cannot forge the
   Worker→relay envelope or its result attribution.
-- `ALLOWED_UPSTREAM_HOSTS` bounds *what* an open caller can reach. Being open to
-  callers is acceptable; being an open proxy to arbitrary hosts is not, because
-  the traffic egresses from the relay's VPS address and abuse is attributed
-  there.
+- `ALLOWED_UPSTREAM_HOSTS` can bound *what* an open caller reaches, but the
+  deployed value is empty: any public HTTPS host is reachable. That is a
+  deliberate operator decision, and it means abuse of this Worker egresses from
+  the relay's VPS address and is attributed there. Target *shape* is still
+  enforced — HTTPS only, hostname only, no IP literals, no `localhost`.
+
+The rules below apply whenever a list *is* configured; with the allowlist empty
+only the redirect row's non-host checks can fire:
 
 | Condition | Status | `type` |
 | --- | --- | --- |
@@ -224,14 +228,24 @@ domain (`.openai.com` does not match `evil-openai.com`). The same rule is applie
 to upstream redirects, so a redirect cannot reach a host a client could not have
 requested directly.
 
+The deployed value is empty, which permits every public HTTPS host:
+
+```text
+ALLOWED_UPSTREAM_HOSTS = ""
+```
+
+That is an accepted trade-off for this deployment, not an oversight: the
+integration test asserts the binding is empty, so the open contract cannot be
+narrowed by accident — and the enforcement code plus its unit tests remain in
+place, so re-narrowing is a one-value change:
+
 ```text
 ALLOWED_UPSTREAM_HOSTS = "ps.air-outer.com,.openai.com"
 ```
 
-Leaving it unset or empty preserves the any-public-host behaviour. That is the
-documented rollback, but for a deployment shared with other people it should be
-set: without it, this Worker is an open proxy to any public HTTPS host, egressing
-from the relay's address.
+Understand what empty costs: this Worker is reachable by anyone and can be
+pointed at any public HTTPS host, with egress attributed to the relay's address.
+Set a list before sharing the endpoint.
 
 `wrangler.toml` holds only the non-secret URL and key id, so a deploy cannot
 silently lose them. The signing secret is set out of band and appears in no
