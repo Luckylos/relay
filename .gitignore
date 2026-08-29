@@ -1,13 +1,19 @@
-# Rust
-/relay/target/
+# Rust. `target-cli/` is a separate target dir for command-line cargo runs, kept
+# apart from `target/` so an editor's rust-analyzer holding target/debug/.cargo-lock
+# cannot block them.
+#
+# Unanchored on purpose. The anchored form only matched one level, so a cargo run
+# whose CARGO_TARGET_DIR was relative to a cwd already inside the crate wrote to
+# egress-relay/egress-relay/target-cli/ and `git add -A` swept 1838 build
+# artifacts into a commit. Build output is never tracked at any depth.
+target/
+target-cli/
 
-# Node -- one entry per independently installable Worker package.
-/codex-worker/node_modules/
-/codex-worker/dist/
-/codex-worker/.wrangler/
-/claude-worker/node_modules/
-/claude-worker/dist/
-/claude-worker/.wrangler/
+# Node. Unanchored for the same reason as the Rust entries above: nested
+# node_modules is normal, and no build output should ever be tracked.
+node_modules/
+dist/
+.wrangler/
 
 # Python
 __pycache__/
