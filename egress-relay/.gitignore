@@ -1,0 +1,10 @@
+/target
+# Separate target dir for command-line cargo runs, so an editor's rust-analyzer
+# holding target/debug/.cargo-lock cannot block them.
+/target-cli
+relay.env
+relay.env.*
+*.bak
+*.bak-*
+ch110-backup-*
+*.log

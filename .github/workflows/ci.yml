@@ -5,8 +5,8 @@ on:
     branches: [main]
   pull_request:
 
-# Four independent jobs, deliberately not chained: `relay`, `codex-worker`
-# and `claude-worker` must each stay buildable and testable on their own, so none
+# Four independent jobs, deliberately not chained: `relay`, `codex-ingress`
+# and `claude-ingress` must each stay buildable and testable on their own, so none
 # gates the others. That independence is the point of the layout -- each is a
 # separate deployment artifact with its own rollback.
 #
@@ -20,11 +20,11 @@ on:
 #     TypeScript Workers, Python probe), agrees over shared vectors, and each
 #     subtree's copy of the fixture matches the canonical one.
 jobs:
-  relay:
+  egress-relay:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: relay
+        working-directory: egress-relay
     steps:
       - uses: actions/checkout@v4
 
@@ -40,11 +40,11 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
 
-  codex-worker:
+  codex-ingress:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: codex-worker
+        working-directory: codex-ingress
     steps:
       - uses: actions/checkout@v4
 
@@ -52,17 +52,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: codex-worker/package-lock.json
+          cache-dependency-path: codex-ingress/package-lock.json
 
       - run: npm ci
       # typecheck + vitest (workerd pool) + wrangler dry-run build.
       - run: npm run check
 
-  claude-worker:
+  claude-ingress:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: claude-worker
+        working-directory: claude-ingress
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +70,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: claude-worker/package-lock.json
+          cache-dependency-path: claude-ingress/package-lock.json
 
       - run: npm ci
       # typecheck + vitest (workerd pool) + wrangler dry-run build.
@@ -101,16 +101,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: |
-            codex-worker/package-lock.json
-            claude-worker/package-lock.json
+            codex-ingress/package-lock.json
+            claude-ingress/package-lock.json
 
-      - name: Install codex-worker dependencies
-        working-directory: codex-worker
+      - name: Install codex-ingress dependencies
+        working-directory: codex-ingress
         # esbuild is needed to bundle the TypeScript runner for plain Node.
         run: npm ci
 
-      - name: Install claude-worker dependencies
-        working-directory: claude-worker
+      - name: Install claude-ingress dependencies
+        working-directory: claude-ingress
         run: npm ci
 
       - name: Cross-language protocol conformance

@@ -4,8 +4,8 @@
 Why this exists
 ---------------
 The wire protocol is implemented four times: `relay/src/protocol/signing.rs`
-(Rust server), `codex-worker/src/relay/{protocol,signing}.ts` and
-`claude-worker/src/relay/{protocol,signing}.ts` (two independently deployable
+(Rust server), `codex-ingress/src/relay/{protocol,signing}.ts` and
+`claude-ingress/src/relay/{protocol,signing}.ts` (two independently deployable
 Cloudflare Workers) and `relay/scripts/relay_probe.py` (operator probe).
 Before the monorepo they lived in separate repositories with a hand-copied
 fixture, so an edit to one side could silently break HMAC verification with
@@ -54,21 +54,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # The canonical fixture, plus the per-subtree copies each side reads.
 #
-# The copies are deliberate: `codex-worker/`, `claude-worker/` and
+# The copies are deliberate: `codex-ingress/`, `claude-ingress/` and
 # `relay/` must each stay independently extractable and runnable, so none
 # may read across subtree boundaries. Byte-identity is therefore a gated
 # invariant rather than a filesystem fact.
 CANONICAL_FIXTURE = ROOT / "protocol" / "relay-protocol-v1.json"
 FIXTURE_COPIES = (
-    ROOT / "relay" / "tests" / "fixtures" / "relay-protocol-v1.json",
-    ROOT / "codex-worker" / "test" / "fixtures" / "relay-protocol-v1.json",
-    ROOT / "claude-worker" / "test" / "fixtures" / "relay-protocol-v1.json",
+    ROOT / "egress-relay" / "tests" / "fixtures" / "relay-protocol-v1.json",
+    ROOT / "codex-ingress" / "test" / "fixtures" / "relay-protocol-v1.json",
+    ROOT / "claude-ingress" / "test" / "fixtures" / "relay-protocol-v1.json",
 )
 
 # The two Worker packages, each driven through its own copy of the protocol code.
 TS_PACKAGES = (
-    ("ts-codex", ROOT / "codex-worker"),
-    ("ts-claude", ROOT / "claude-worker"),
+    ("ts-codex", ROOT / "codex-ingress"),
+    ("ts-claude", ROOT / "claude-ingress"),
 )
 
 
@@ -248,7 +248,7 @@ def run_ts(label: str, package: pathlib.Path, stdin: str, scratch: str) -> dict:
 
 def python_results(data: dict) -> dict:
     """Drive the operator probe's own canonicalization code."""
-    sys.path.insert(0, str(ROOT / "relay" / "scripts"))
+    sys.path.insert(0, str(ROOT / "egress-relay" / "scripts"))
     import hashlib
     import hmac
 
@@ -338,7 +338,7 @@ def main() -> int:
             "rust": run(
                 "rust",
                 ["cargo", "run", "--quiet", "--bin", "conformance"],
-                ROOT / "relay",
+                ROOT / "egress-relay",
                 stdin,
             ),
             "python": python_results(data),

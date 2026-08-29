@@ -5,16 +5,16 @@ server that share one versioned wire protocol.
 
 ```
 codex-relay/
-├── codex-worker/           Cloudflare Worker (TypeScript)  — Codex ingress
-├── claude-worker/          Cloudflare Worker (TypeScript)  — Claude ingress
-├── relay/                  Rust binaries                   — VPS egress
+├── codex-ingress/           Cloudflare Worker (TypeScript)  — Codex ingress
+├── claude-ingress/          Cloudflare Worker (TypeScript)  — Claude ingress
+├── egress-relay/           Rust binaries                   — VPS egress
 ├── protocol/               Canonical wire-protocol fixture + cross-subtree gates
 └── docs/                   Design and implementation plans
 ```
 
 ## Why one repository
 
-The Workers and `relay/` implement two halves of the same signed
+The Workers and `egress-relay/` implement two halves of the same signed
 protocol. Kept in separate repositories, a change to canonicalization or signing
 on one side could only be caught by hand-copying a fixture, and nothing turned
 red when the copies drifted. Here they share one history, one fixture and one CI
@@ -22,7 +22,7 @@ run.
 
 ## Two Workers, not one with two entrypoints
 
-`codex-worker/` and `claude-worker/` are separate packages that each carry their
+`codex-ingress/` and `claude-ingress/` are separate packages that each carry their
 own copy of the relay pipeline, signing, target and redirect code. They are
 deployed as two distinct Cloudflare Workers, so each must be installable,
 testable, buildable, deployable and **roll-back-able on its own** — a shared
@@ -48,9 +48,9 @@ security regression.
 
 The intended behavioural differences between them:
 
-| | `codex-worker/` | `claude-worker/` |
+| | `codex-ingress/` | `claude-ingress/` |
 | --- | --- | --- |
-| Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Rebuilt from a pinned profile.** A caller may or may not be Claude Code, so one profile is applied to every request: identity headers and `anthropic-beta` derived from the body. See `claude-worker/src/cloak/` |
+| Caller identity | **Synthesized.** Callers are not Codex, but the upstream channel expects Codex-shaped traffic, so one resolved identity is projected into `user-agent`, `originator`, `x-codex-*` headers **and** the body's `client_metadata` | **Rebuilt from a pinned profile.** A caller may or may not be Claude Code, so one profile is applied to every request: identity headers and `anthropic-beta` derived from the body. See `claude-ingress/src/cloak/` |
 | Body | May gain `client_metadata` | Forwarded as-is except `metadata.user_id`; prompt content is never altered |
 | Upstream credential | Caller's `Authorization`, forwarded untouched | Caller's `x-api-key`, forwarded untouched |
 | Body ceiling | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
@@ -71,7 +71,7 @@ identical by design and gated by each package's own tests.
 ## Subtree independence (a hard constraint)
 
 **No package depends on any other, and none depends on `protocol/` at build or
-test time.** Each of `codex-worker/`, `claude-worker/` and `relay/` can be
+test time.** Each of `codex-ingress/`, `claude-ingress/` and `egress-relay/` can be
 extracted on its own and will typecheck, test and build.
 
 Concretely:
@@ -79,8 +79,8 @@ Concretely:
 - No source, test, config or build file reaches outside its own subtree.
 - Each subtree keeps **its own copy** of the protocol fixture:
   - `relay/tests/fixtures/relay-protocol-v1.json`
-  - `codex-worker/test/fixtures/relay-protocol-v1.json`
-  - `claude-worker/test/fixtures/relay-protocol-v1.json`
+  - `codex-ingress/test/fixtures/relay-protocol-v1.json`
+  - `claude-ingress/test/fixtures/relay-protocol-v1.json`
 - `protocol/relay-protocol-v1.json` is the canonical copy. Byte-identity with the
   three subtree copies is a **gated invariant**, not a filesystem fact.
 
@@ -90,8 +90,8 @@ consistency is enforced by a check that fails loudly instead.
 Verify independence at any time:
 
 ```bash
-cp -a codex-worker  /tmp/solo-codex  && (cd /tmp/solo-codex  && npm ci && npm run check)
-cp -a claude-worker /tmp/solo-claude && (cd /tmp/solo-claude && npm ci && npm run check)
+cp -a codex-ingress  /tmp/solo-codex  && (cd /tmp/solo-codex  && npm ci && npm run check)
+cp -a claude-ingress /tmp/solo-claude && (cd /tmp/solo-claude && npm ci && npm run check)
 ```
 
 Note the runtime fail-closed behaviour is a separate matter: a **deployed**
@@ -110,12 +110,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 
 # Codex Worker
-cd codex-worker
+cd codex-ingress
 npm ci
 npm run check          # typecheck + vitest (workerd) + wrangler dry-run
 
 # Claude Worker
-cd claude-worker
+cd claude-ingress
 npm ci
 npm run check
 
@@ -131,8 +131,8 @@ python3 protocol/conformance.py
 
 The wire protocol is implemented four times:
 `relay/src/protocol/signing.rs`,
-`codex-worker/src/relay/{protocol,signing}.ts`,
-`claude-worker/src/relay/{protocol,signing}.ts`, and
+`codex-ingress/src/relay/{protocol,signing}.ts`,
+`claude-ingress/src/relay/{protocol,signing}.ts`, and
 `relay/scripts/relay_probe.py`. `protocol/conformance.py` drives all four
 over shared vectors and requires byte-identical canonical requests and HMAC
 signatures.
@@ -158,8 +158,8 @@ The three artifacts deploy independently and the repository layout does not
 change their paths.
 
 ```bash
-cd codex-worker  && npx wrangler deploy
-cd claude-worker && npx wrangler deploy
+cd codex-ingress  && npx wrangler deploy
+cd claude-ingress && npx wrangler deploy
 ```
 
 Both Workers sign against the same relay key id, so `EGRESS_RELAY_SECRET` must be

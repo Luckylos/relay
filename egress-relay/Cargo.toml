@@ -1,0 +1,56 @@
+[package]
+name = "egress-relay"
+version = "0.2.0"
+edition = "2021"
+autobins = false
+
+[[bin]]
+name = "codex-https-relay"
+path = "src/bin/codex-https-relay.rs"
+
+# Cross-language conformance runner, not a deployed artifact. Driven by
+# protocol/conformance.py; see that file for why the gate exists.
+[[bin]]
+name = "conformance"
+path = "src/bin/conformance.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# http2 + stream. default-features=false disables auto gzip/deflate/brotli so
+# responses are relayed byte-for-byte and we never inject accept-encoding.
+# CRITICAL: use the *-no-provider rustls feature so reqwest does NOT pull the
+# `ring` crypto provider. ring lacks the P-521 signature scheme
+# ecdsa_secp521r1_sha512 (0x0603); the real Codex CLI uses rustls with the
+# aws-lc-rs provider, which DOES advertise 0x0603 in its ClientHello
+# signature_algorithms. Missing 0x0603 was the sole JA4 mismatch (verified by
+# capturing the native codex binary's real ClientHello). We build a rustls
+# ClientConfig backed by aws-lc-rs and inject it via use_preconfigured_tls.
+reqwest = { version = "0.12", features = ["rustls-tls-webpki-roots-no-provider", "http2", "stream"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
+webpki-roots = "0.26"
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
+bytes = "1"
+futures-util = "0.3"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+# Identity synthesis (ported from the Python codex-ua-proxy):
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"
+url = "2"
+
+[dev-dependencies]
+rcgen = { version = "0.14.9", default-features = false, features = ["aws_lc_rs"] }
+tokio-rustls = "0.26.4"
+tower = { version = "0.5", features = ["util"] }
+
+# Full optimization: the egress hot path reads+parses+reinjects every request
+# body per turn, and this is a long-lived service. opt-level is codegen-only and
+# does NOT affect the TLS ClientHello / JA4 (that is fixed by rustls + aws-lc-rs
+# in src/egress/tls.rs), so raising it carries no fingerprint risk.
+[profile.release]
+opt-level = 3

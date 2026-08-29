@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-`codex-worker/` and `claude-worker/` each hold their own copy of the relay
+`codex-ingress/` and `claude-ingress/` each hold their own copy of the relay
 plumbing: 2054 lines across 21 files that are byte-identical today. The
 duplication is deliberate and `protocol/conformance.py` already explains why --
 each package must install, test, build, deploy and roll back on its own, which a
@@ -26,8 +26,8 @@ gate is what keeps that true when it stops being remembered.
 What it does NOT do
 -------------------
 It does not require the two packages to be identical. Each has code the other
-must not carry -- `codex-worker/src/identity.ts` projects an identity the Claude
-ingress deliberately leaves alone, and `claude-worker/src/cloak/` shapes Claude
+must not carry -- `codex-ingress/src/identity.ts` projects an identity the Claude
+ingress deliberately leaves alone, and `claude-ingress/src/cloak/` shapes Claude
 Code requests the Codex ingress has no business emitting. Those live in
 PACKAGE_LOCAL. Files that are shared but legitimately differ are listed in
 INTENTIONALLY_DIVERGENT with the reason, and the gate checks each one still
@@ -47,7 +47,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PACKAGES = ("codex-worker", "claude-worker")
+PACKAGES = ("codex-ingress", "claude-ingress")
 
 # Directories that are build output or vendored code, not authored source.
 SKIP_DIRS = frozenset({"node_modules", "dist", ".wrangler", ".git", "coverage"})
@@ -94,7 +94,7 @@ INTENTIONALLY_DIVERGENT: dict[str, str] = {
     "src/index.ts": "each ingress documents and wires its own request shaping",
     "test/pipeline.test.ts": (
         "same shared pipeline, but each package asserts its own contract: "
-        "codex-worker covers a failed identity projection, claude-worker covers "
+        "codex-ingress covers a failed identity projection, claude-ingress covers "
         "leaving the caller's identity alone"
     ),
     "test/worker.integration.test.ts": "asserts the ingress behaviour of its own package",
@@ -112,14 +112,14 @@ GATED_ELSEWHERE = frozenset({"test/fixtures/relay-protocol-v1.json"})
 
 # Files only one package may carry, with the reason it must not be shared.
 PACKAGE_LOCAL: dict[str, dict[str, str]] = {
-    "codex-worker": {
+    "codex-ingress": {
         "src/config.ts": "Codex-only ingress configuration",
         "src/identity.ts": "projects an identity the Claude ingress must not",
         "test/identity.test.ts": "covers the above",
         "test/open-ingress.test.ts": "Codex ingress admission",
         "test/relay-egress.test.ts": "Codex egress",
     },
-    "claude-worker": {
+    "claude-ingress": {
         "src/cloak/attribution.ts": "Claude Code billing attribution",
         "src/cloak/beta.ts": "anthropic-beta assembly",
         "src/cloak/body.ts": "Claude request body shaping",
