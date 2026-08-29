@@ -11,8 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
 import { isAllowedUpstreamHost, parseTarget, TargetError } from "../src/target";
 import { RedirectError, rewriteLocation } from "../src/redirect";
-import { base64UrlDecode } from "../src/relay/protocol";
 import { asUpstream } from "./support/relay-stub";
+import { signedHeaders, signedTarget } from "./support/signed-block";
 
 const ENV: Env = {
   CODEX_PROXY_INSTALLATION_ID: "11111111-1111-1111-1111-111111111111",
@@ -43,18 +43,6 @@ function captureRelay() {
 
 function sentRequest(spy: ReturnType<typeof captureRelay>): Request {
   return spy.mock.calls[0]?.[0] as Request;
-}
-
-function signedHeaders(request: Request): Map<string, string> {
-  const raw = request.headers.get("x-codex-relay-headers") ?? "";
-  const block = new TextDecoder().decode(base64UrlDecode(raw));
-  const parsed = new Map<string, string>();
-  for (const line of block.split("\n")) {
-    if (line.length === 0) continue;
-    const separator = line.indexOf(":");
-    parsed.set(line.slice(0, separator), line.slice(separator + 1));
-  }
-  return parsed;
 }
 
 describe("open ingress", () => {
@@ -111,17 +99,24 @@ describe("open ingress", () => {
     }
   });
 
-  it("still refuses a client-forged relay envelope", async () => {
+  // Both namespaces, not just the current one. The legacy names stay reserved
+  // permanently because a live relay still reads them, so a caller that could
+  // smuggle `x-codex-relay-target` through would steer this Worker's signed
+  // envelope at a host of its choosing.
+  it.each([
+    ["current", "x-egress-relay-"],
+    ["legacy", "x-codex-relay-"],
+  ])("still refuses a client-forged %s relay envelope", async (_generation, prefix) => {
     // Open to callers must not mean the caller can impersonate the Worker to the
-    // relay. Every x-codex-relay-* header is dropped before signing.
+    // relay. Every relay control header is dropped before signing.
     const spy = captureRelay();
     try {
       await worker.fetch(
         new Request("https://w.example/api.openai.com/v1/responses", {
           method: "POST",
           headers: {
-            "x-codex-relay-target": "aHR0cHM6Ly9hdHRhY2tlci5leGFtcGxl",
-            "x-codex-relay-result": "upstream",
+            [`${prefix}target`]: "aHR0cHM6Ly9hdHRhY2tlci5leGFtcGxl",
+            [`${prefix}result`]: "upstream",
             "content-type": "application/json",
           },
           body: "{}",
@@ -132,12 +127,9 @@ describe("open ingress", () => {
 
       const relayRequest = sentRequest(spy);
       // The Worker's own target wins, not the forged one.
-      expect(
-        new TextDecoder().decode(
-          base64UrlDecode(relayRequest.headers.get("x-codex-relay-target") ?? ""),
-        ),
-      ).toBe("https://api.openai.com/v1/responses");
-      expect(signedHeaders(relayRequest).has("x-codex-relay-result")).toBe(false);
+      expect(signedTarget(relayRequest)).toBe("https://api.openai.com/v1/responses");
+      expect(signedHeaders(relayRequest).has(`${prefix}result`)).toBe(false);
+      expect(signedHeaders(relayRequest).has(`${prefix}target`)).toBe(false);
     } finally {
       spy.mockRestore();
     }
@@ -212,11 +204,9 @@ describe("upstream host allowlist", () => {
       );
 
       expect(response.status).toBe(200);
-      expect(
-        new TextDecoder().decode(
-          base64UrlDecode(sentRequest(spy).headers.get("x-codex-relay-target") ?? ""),
-        ),
-      ).toBe("https://ps.air-outer.com/v1/responses?stream=true");
+      expect(signedTarget(sentRequest(spy))).toBe(
+        "https://ps.air-outer.com/v1/responses?stream=true",
+      );
     } finally {
       spy.mockRestore();
     }

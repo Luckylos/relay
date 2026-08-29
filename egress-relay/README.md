@@ -1,12 +1,17 @@
-# codex-https-relay
+# egress-relay
 
-Signed dynamic HTTPS egress for the Cloudflare Workers in `../worker`. The Worker
-holds the caller-facing contract; this relay is the network egress behind it and
-is never addressed by clients directly.
+Signed dynamic HTTPS egress for the Cloudflare Workers in `../codex-ingress` and
+`../claude-ingress`. Each Worker holds its own caller-facing contract; this relay
+is the network egress behind both and is never addressed by clients directly.
 
 ```
 Worker → codex-https-relay :18093 → upstream (dynamic HTTPS target)
 ```
+
+The crate is `egress-relay`; the deployed binary and systemd unit are still named
+`codex-https-relay`. That name is a deploy identity, not a description — renaming
+it would mean a new unit, a new binary path, and a cutover window on a host that
+also carries the proxy egress and the Cloudflare tunnel, so it stays as is.
 
 ## Why it exists
 
@@ -49,6 +54,41 @@ implementations. The relay forwards what the Worker signed, unmodified.
   caller's prompt content untouched.
 
 Neither Worker substitutes the caller's upstream credential.
+
+## Wire protocol generations (v1 and v2)
+
+The relay reads both live generations, because it and the two Workers deploy
+independently and there is no moment when all three change at once.
+
+| | v1 | v2 (current) |
+| --- | --- | --- |
+| Control headers | `x-codex-relay-*` | `x-egress-relay-*` |
+| Signing domain (canonical line 1) | `codex-relay-v1` | `egress-relay-v2` |
+| Fixture | `tests/fixtures/relay-protocol-v1.json` | `tests/fixtures/relay-protocol-v2.json` |
+
+Only line 1 of the canonical request differs; every other field, order, and
+encoding is byte-for-byte identical. v1 is frozen, not retired.
+
+Three rules keep the window from becoming an attack surface:
+
+- **One generation per request.** `detect_generation` picks the namespace once
+  from the header names present; every envelope field is then read from that
+  namespace only. A request carrying both prefixes is refused
+  `400 relay_duplicate_control` rather than resolved — per-field fallback would
+  let a caller mix a v1 signature with a v2 target.
+- **Both namespaces are stripped from the signed business-header block.** A
+  forwarded header named under either prefix is refused, even though the block is
+  signed: replaying it upstream would let a signed request forge attribution.
+- **Every response is stamped in both namespaces.** `result`, `error`, and
+  `request-id` are written under `x-egress-relay-*` and `x-codex-relay-*` with the
+  same values and a single generated request id. A response carries no generation
+  hint of its own, so stamping only one namespace would make an ingress that reads
+  the other fail closed on every request. Upstream copies of all six names are
+  deleted before stamping, so upstream cannot forge attribution in either
+  generation.
+
+`docs/relay-protocol-v2-delta.md` in the repository root records the full delta
+and the deploy order it implies (relay first, then the Workers).
 
 ## Configuration (environment)
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
-import { base64UrlDecode } from "../src/relay/protocol";
 import { asUpstream } from "./support/relay-stub";
+import { signedHeaders, signedTarget } from "./support/signed-block";
 
 
 const ENV: Env = {
@@ -19,20 +19,6 @@ function context(): ExecutionContext {
   } as unknown as ExecutionContext;
 }
 
-function decodeUtf8(value: string | null): string {
-  return new TextDecoder().decode(base64UrlDecode(value ?? ""));
-}
-
-function headerBlock(request: Request): Map<string, string> {
-  const block = decodeUtf8(request.headers.get("x-codex-relay-headers"));
-  const parsed = new Map<string, string>();
-  for (const line of block.split("\n")) {
-    if (line.length === 0) continue;
-    const separator = line.indexOf(":");
-    parsed.set(line.slice(0, separator), line.slice(separator + 1));
-  }
-  return parsed;
-}
 
 function sseBody() {
   let releaseSecond!: () => void;
@@ -101,13 +87,13 @@ describe("Worker relay egress", () => {
       const sent = upstream.mock.calls[0]?.[0] as Request;
       expect(sent.url).toBe(ENV.EGRESS_RELAY_URL);
       expect(sent.method).toBe("POST");
-      expect(decodeUtf8(sent.headers.get("x-codex-relay-target"))).toBe(
+      expect(signedTarget(sent)).toBe(
         "https://api.example.com/v1/responses?stream=true&x=1",
       );
-      expect(sent.headers.get("x-codex-relay-method")).toBe("POST");
+      expect(sent.headers.get("x-egress-relay-method")).toBe("POST");
 
       // Identity projection still applies, now carried in the signed block.
-      const forwarded = headerBlock(sent);
+      const forwarded = signedHeaders(sent);
       expect(forwarded.get("authorization")).toBe("Bearer client-token");
       expect(forwarded.get("session-id")).toBeTruthy();
       expect(forwarded.has("x-codex-installation-id")).toBe(false);
@@ -143,9 +129,13 @@ describe("Worker relay egress", () => {
             // The retired ingress header is still stripped by the prefix rule.
             "x-codex-relay-token": "retired-header-value",
             // A client must not be able to forge envelope fields or pin its own
-            // signature by sending control headers.
+            // signature by sending control headers. Both generations are tried:
+            // the legacy names stay reserved for as long as any relay reads
+            // them, so letting them through would be just as exploitable.
             "x-codex-relay-key-id": "forged",
             "x-codex-relay-signature": "forged",
+            "x-egress-relay-key-id": "forged",
+            "x-egress-relay-signature": "forged",
             connection: "close",
           },
         }),
@@ -154,12 +144,12 @@ describe("Worker relay egress", () => {
       );
 
       const sent = upstream.mock.calls[0]?.[0] as Request;
-      const forwarded = headerBlock(sent);
-      expect([...forwarded.keys()].some((name) => name.startsWith("x-codex-relay-"))).toBe(
-        false,
+      const forwarded = signedHeaders(sent);
+      expect([...forwarded.keys()].filter((name) => /^x-(egress|codex)-relay-/.test(name))).toEqual(
+        [],
       );
       expect(forwarded.has("connection")).toBe(false);
-      expect(sent.headers.get("x-codex-relay-key-id")).toBe(ENV.EGRESS_RELAY_KEY_ID);
+      expect(sent.headers.get("x-egress-relay-key-id")).toBe(ENV.EGRESS_RELAY_KEY_ID);
     } finally {
       upstream.mockRestore();
     }

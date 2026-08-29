@@ -5,9 +5,30 @@ import { errorResponse, type RelayErrorType } from "../errors";
  *
  * These are an internal Worker<->relay channel and are consumed here: they must
  * never continue to the client.
+ *
+ * Read in both generations. The relay and this Worker deploy independently, so
+ * a relay that has not yet been upgraded answers only in the legacy namespace
+ * while an upgraded one answers in both. Reading only the current namespace
+ * would see no `result` header at all and fail every request closed to
+ * `502 relay_unavailable` -- a total outage produced by a rename, not by a
+ * fault. Current is preferred so an upgraded relay's own value wins if an
+ * upstream ever manages to place a legacy-named header.
  */
-const RESULT_HEADER = "x-codex-relay-result";
-const ERROR_HEADER = "x-codex-relay-error";
+const RESULT_HEADERS = ["x-egress-relay-result", "x-codex-relay-result"] as const;
+const ERROR_HEADERS = ["x-egress-relay-error", "x-codex-relay-error"] as const;
+
+function readControl(
+  headers: Headers,
+  names: readonly string[],
+): string | null {
+  for (const name of names) {
+    const value = headers.get(name);
+    if (value !== null) {
+      return value.trim().toLowerCase();
+    }
+  }
+  return null;
+}
 
 /**
  * How a relay-generated failure is presented to the client.
@@ -43,7 +64,7 @@ export function attributeRelayResponse(
   upstream: Response,
   projectHeaders: (headers: Headers) => Headers,
 ): Response {
-  const result = upstream.headers.get(RESULT_HEADER)?.trim().toLowerCase() ?? null;
+  const result = readControl(upstream.headers, RESULT_HEADERS);
 
   // Missing attribution means an unknown or pre-upgrade relay. Reading that as
   // `upstream` would pass a relay 401 straight through -- the exact leak the
@@ -56,7 +77,7 @@ export function attributeRelayResponse(
     });
   }
 
-  const machineCode = upstream.headers.get(ERROR_HEADER)?.trim().toLowerCase() ?? "";
+  const machineCode = readControl(upstream.headers, ERROR_HEADERS) ?? "";
   const [status, message, type] = RELAY_ERROR_MAP.get(machineCode) ?? RELAY_UNAVAILABLE;
 
   // Built from scratch, never from the relay's body: the relay's own JSON names

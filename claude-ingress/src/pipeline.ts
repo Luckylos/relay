@@ -116,9 +116,10 @@ export function createRelayHandler<E extends PipelineEnv>(
       // no Worker-specific credential. Upstream authorization stays the caller's
       // own header, forwarded untouched.
       //
-      // Client-supplied `x-codex-relay-*` headers are still stripped before
-      // egress (see headers.ts): being open to callers must not let a caller
-      // forge the Worker->relay envelope.
+      // Client-supplied relay control headers are still stripped before egress,
+      // in both the current `x-egress-relay-*` and the legacy `x-codex-relay-*`
+      // namespace (see headers.ts): being open to callers must not let a caller
+      // forge the Worker->relay envelope or its result attribution.
       let target;
       try {
         target = parseTarget(request, env);

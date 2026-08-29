@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "key_id": "k-current",
+  "timestamp": 1700000000,
+  "nonce": "AAECAwQFBgcICQoLDA0ODw",
+  "method": "POST",
+  "target": "https://api.example.com/v1/responses?stream=true",
+  "headers": [
+    [
+      "X-Test",
+      "  alpha\t beta   gamma  "
+    ],
+    [
+      "content-type",
+      "application/json"
+    ],
+    [
+      "Accept",
+      "application/json"
+    ]
+  ],
+  "body_utf8": "{\"model\":\"gpt-test\",\"stream\":true}",
+  "canonical_header_block": "accept:application/json\ncontent-type:application/json\nx-test:alpha beta gamma\n",
+  "canonical_header_block_b64": "YWNjZXB0OmFwcGxpY2F0aW9uL2pzb24KY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24KeC10ZXN0OmFscGhhIGJldGEgZ2FtbWEK",
+  "target_b64": "aHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20vdjEvcmVzcG9uc2VzP3N0cmVhbT10cnVl",
+  "body_sha256": "GDXnXlPhi3sDnN68UP_t7RWIK9hbCD5NP5C_luNCZJg",
+  "canonical_request": "egress-relay-v2\nk-current\n1700000000\nAAECAwQFBgcICQoLDA0ODw\nPOST\naHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20vdjEvcmVzcG9uc2VzP3N0cmVhbT10cnVl\nGDXnXlPhi3sDnN68UP_t7RWIK9hbCD5NP5C_luNCZJg\nYWNjZXB0OmFwcGxpY2F0aW9uL2pzb24KY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24KeC10ZXN0OmFscGhhIGJldGEgZ2FtbWEK",
+  "secret": "fixture-only-key-not-production",
+  "signature": "t5IXOMaXpJn4yOnPC_EmY21fd6GWYXkl9cuom03rkKA"
+}

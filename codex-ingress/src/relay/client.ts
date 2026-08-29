@@ -1,7 +1,7 @@
 import type { TargetRequest } from "../target";
 import { isStrippedRequestHeader, projectResponseHeaders } from "../headers";
 import { attributeRelayResponse } from "./attribution";
-import { base64UrlEncode, canonicalizeHeaders, utf8 } from "./protocol";
+import { CURRENT_VERSION, base64UrlEncode, canonicalizeHeaders, utf8 } from "./protocol";
 import { sha256Base64Url, signRelayRequest } from "./signing";
 
 export type RelayFetch = (request: Request) => Promise<Response>;
@@ -54,21 +54,36 @@ export async function sendViaRelay(request: RelayRequest): Promise<Response> {
   const nonce = request.nonce ?? newNonce();
 
   const signature = await signRelayRequest(
-    { version: 1, keyId: request.keyId, timestamp, nonce, method, target, headers, body: request.body },
+    {
+      version: CURRENT_VERSION,
+      keyId: request.keyId,
+      timestamp,
+      nonce,
+      method,
+      target,
+      headers,
+      body: request.body,
+    },
     request.secret,
   );
 
+  // The envelope names must belong to the same generation as the signing domain
+  // the signature was produced under. A relay detects the generation from these
+  // names and then verifies against that generation's domain, so a v2 signature
+  // sent under legacy names verifies against the v1 domain and is rejected as a
+  // bad signature -- an authentication failure whose real cause is a mismatched
+  // rename. Both are derived from CURRENT_VERSION so they cannot drift apart.
   const envelope = new Headers({
     "content-type": "application/octet-stream",
-    "x-codex-relay-version": "1",
-    "x-codex-relay-key-id": request.keyId,
-    "x-codex-relay-timestamp": String(timestamp),
-    "x-codex-relay-nonce": nonce,
-    "x-codex-relay-method": method,
-    "x-codex-relay-target": base64UrlEncode(utf8(target)),
-    "x-codex-relay-body-sha256": await sha256Base64Url(request.body),
-    "x-codex-relay-headers": base64UrlEncode(utf8(canonicalizeHeaders(headers))),
-    "x-codex-relay-signature": signature,
+    "x-egress-relay-version": String(CURRENT_VERSION),
+    "x-egress-relay-key-id": request.keyId,
+    "x-egress-relay-timestamp": String(timestamp),
+    "x-egress-relay-nonce": nonce,
+    "x-egress-relay-method": method,
+    "x-egress-relay-target": base64UrlEncode(utf8(target)),
+    "x-egress-relay-body-sha256": await sha256Base64Url(request.body),
+    "x-egress-relay-headers": base64UrlEncode(utf8(canonicalizeHeaders(headers))),
+    "x-egress-relay-signature": signature,
   });
 
   const send = request.fetchImpl ?? ((outbound: Request) => fetch(outbound));

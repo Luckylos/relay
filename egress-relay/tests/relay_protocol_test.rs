@@ -2,7 +2,8 @@ use std::fs;
 
 use egress_relay::relay_protocol::{
     base64url_decode, base64url_encode, build_canonical_request, canonicalize_headers,
-    sha256_base64url, sign_relay_request, ProtocolError, RelaySigningInput,
+    sha256_base64url, sign_relay_request, ProtocolError, RelaySigningInput, DOMAIN_SEPARATOR_V1,
+    DOMAIN_SEPARATOR_V2,
 };
 use serde::Deserialize;
 
@@ -25,9 +26,25 @@ struct Fixture {
     signature: String,
 }
 
+/// Both live generations are frozen by their own fixture. Reading only v1 would
+/// leave the v2 signing domain -- the one every deployed Worker now signs under --
+/// unchecked against the committed bytes the other three implementations share.
+fn fixture_for(version: u8) -> Fixture {
+    let raw = fs::read_to_string(format!("tests/fixtures/relay-protocol-v{version}.json")).unwrap();
+    let parsed: Fixture = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        parsed.version, version,
+        "fixture v{version} declares version {}",
+        parsed.version
+    );
+    parsed
+}
+
+/// v1 stays the default for the generation-independent cases below: they assert
+/// canonicalization rules that are byte-identical across generations, so running
+/// them twice would add no coverage.
 fn fixture() -> Fixture {
-    let raw = fs::read_to_string("tests/fixtures/relay-protocol-v1.json").unwrap();
-    serde_json::from_str(&raw).unwrap()
+    fixture_for(1)
 }
 
 fn input<'a>(fixture: &'a Fixture, body: &'a [u8]) -> RelaySigningInput<'a> {
@@ -45,31 +62,42 @@ fn input<'a>(fixture: &'a Fixture, body: &'a [u8]) -> RelaySigningInput<'a> {
 
 #[test]
 fn matches_shared_canonical_request_and_hmac_fixture() {
-    let vector = fixture();
-    let body = vector.body_utf8.as_bytes();
-    let request = input(&vector, body);
+    for version in [1, 2] {
+        let vector = fixture_for(version);
+        let body = vector.body_utf8.as_bytes();
+        let request = input(&vector, body);
 
-    assert_eq!(
-        canonicalize_headers(&vector.headers).unwrap(),
-        vector.canonical_header_block
-    );
-    assert_eq!(
-        base64url_encode(vector.target.as_bytes()),
-        vector.target_b64
-    );
-    assert_eq!(
-        base64url_encode(vector.canonical_header_block.as_bytes()),
-        vector.canonical_header_block_b64
-    );
-    assert_eq!(sha256_base64url(body), vector.body_sha256);
-    assert_eq!(
-        build_canonical_request(&request).unwrap(),
-        vector.canonical_request
-    );
-    assert_eq!(
-        sign_relay_request(&request, vector.secret.as_bytes()).unwrap(),
-        vector.signature
-    );
+        assert_eq!(
+            canonicalize_headers(&vector.headers).unwrap(),
+            vector.canonical_header_block,
+            "v{version} canonical header block"
+        );
+        assert_eq!(
+            base64url_encode(vector.target.as_bytes()),
+            vector.target_b64,
+            "v{version} target"
+        );
+        assert_eq!(
+            base64url_encode(vector.canonical_header_block.as_bytes()),
+            vector.canonical_header_block_b64,
+            "v{version} header block encoding"
+        );
+        assert_eq!(
+            sha256_base64url(body),
+            vector.body_sha256,
+            "v{version} body digest"
+        );
+        assert_eq!(
+            build_canonical_request(&request).unwrap(),
+            vector.canonical_request,
+            "v{version} canonical request"
+        );
+        assert_eq!(
+            sign_relay_request(&request, vector.secret.as_bytes()).unwrap(),
+            vector.signature,
+            "v{version} signature"
+        );
+    }
 }
 
 #[test]
@@ -77,12 +105,50 @@ fn rejects_unknown_protocol_versions() {
     let vector = fixture();
     let body = vector.body_utf8.clone().into_bytes();
     let mut request = input(&vector, &body);
-    request.version = 2;
+    // v3 rather than v2: v2 is a supported generation now, so asserting on it
+    // would make this test pass because the version is real, not because
+    // unknown versions are refused.
+    request.version = 3;
 
     assert!(matches!(
         build_canonical_request(&request),
-        Err(ProtocolError::UnsupportedVersion(2))
+        Err(ProtocolError::UnsupportedVersion(3))
     ));
+}
+
+/// Each generation signs under its own domain separator, on line 1.
+///
+/// Asserted on the literal tokens rather than on "the two differ", because the
+/// separators are a wire contract: a rename that kept them merely distinct would
+/// still invalidate every signature already in flight from a deployed ingress.
+#[test]
+fn each_generation_carries_its_own_domain_separator() {
+    let vector = fixture();
+    let body = vector.body_utf8.clone().into_bytes();
+
+    let mut v1 = input(&vector, &body);
+    v1.version = 1;
+    let v1_canonical = build_canonical_request(&v1).unwrap();
+    assert_eq!(v1_canonical.lines().next().unwrap(), DOMAIN_SEPARATOR_V1);
+    assert_eq!(DOMAIN_SEPARATOR_V1, "codex-relay-v1");
+
+    let mut v2 = input(&vector, &body);
+    v2.version = 2;
+    let v2_canonical = build_canonical_request(&v2).unwrap();
+    assert_eq!(v2_canonical.lines().next().unwrap(), DOMAIN_SEPARATOR_V2);
+    assert_eq!(DOMAIN_SEPARATOR_V2, "egress-relay-v2");
+
+    // Only line 1 may differ: the migration renames the domain, it does not
+    // reshape the request. A changed field order or encoding here would break v1
+    // verification on an already-deployed relay.
+    let v1_rest: Vec<&str> = v1_canonical.lines().skip(1).collect();
+    let v2_rest: Vec<&str> = v2_canonical.lines().skip(1).collect();
+    assert_eq!(v1_rest, v2_rest);
+
+    assert_ne!(
+        sign_relay_request(&v1, vector.secret.as_bytes()).unwrap(),
+        sign_relay_request(&v2, vector.secret.as_bytes()).unwrap()
+    );
 }
 
 #[test]

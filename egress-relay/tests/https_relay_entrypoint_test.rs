@@ -753,3 +753,293 @@ async fn only_the_fixed_forward_route_accepts_post_and_health_is_generic() {
     assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+/// Build a validly signed v2 envelope: new control namespace, v2 signature.
+///
+/// Deliberately a separate builder rather than a parameter on the v1 one. The
+/// two generations must be constructible independently, so a change that
+/// accidentally couples them (a shared prefix constant, a shared version field)
+/// fails here instead of silently testing one generation twice.
+fn signed_request_v2(nonce: &str) -> Request<Body> {
+    let method = "POST";
+    let target = "https://api.example.com/v1/responses";
+    let headers = vec![["content-type".to_owned(), "application/json".to_owned()]];
+    let body = br#"{"model":"fixture"}"#.to_vec();
+    let input = RelaySigningInput {
+        version: 2,
+        key_id: "current",
+        timestamp: NOW,
+        nonce,
+        method,
+        target,
+        headers: &headers,
+        body: &body,
+    };
+    let signature = sign_relay_request(&input, SECRET).unwrap();
+    let header_block = canonicalize_headers(&headers).unwrap();
+
+    Request::builder()
+        .method("POST")
+        .uri("/v1/forward")
+        .header("content-type", "application/octet-stream")
+        .header("x-egress-relay-version", "2")
+        .header("x-egress-relay-key-id", "current")
+        .header("x-egress-relay-timestamp", NOW.to_string())
+        .header("x-egress-relay-nonce", nonce)
+        .header("x-egress-relay-method", method)
+        .header("x-egress-relay-target", base64url_encode(target.as_bytes()))
+        .header(
+            "x-egress-relay-body-sha256",
+            egress_relay::relay_protocol::sha256_base64url(&body),
+        )
+        .header(
+            "x-egress-relay-headers",
+            base64url_encode(header_block.as_bytes()),
+        )
+        .header("x-egress-relay-signature", signature)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Both control namespaces are accepted on the way in.
+///
+/// This is the property that lets the relay ship before the ingresses: it runs
+/// in front of a Worker still speaking the old namespace and a Worker already
+/// speaking the new one, without a coordinated restart. Asserting both in one
+/// test keeps a regression from passing because only the generation under
+/// active development still works.
+#[tokio::test]
+async fn both_control_generations_are_accepted() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(calls.clone());
+
+    let legacy = app.clone().oneshot(signed_request()).await.unwrap();
+    let current = app
+        .oneshot(signed_request_v2("AQEBAQEBAQEBAQEBAQEBAQ"))
+        .await
+        .unwrap();
+
+    assert_eq!(legacy.status(), StatusCode::ACCEPTED);
+    assert_eq!(current.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "both generations reach the forwarder, so neither is being rejected early"
+    );
+}
+
+/// Every reply is attributed in both namespaces, with the same values.
+///
+/// An ingress that has not been redeployed reads only the old names. If the
+/// relay answered a legacy request in the new namespace only -- or answered in
+/// whichever namespace the request happened to use -- that ingress would see an
+/// unattributed reply and fail closed to `502 relay_unavailable`, turning a
+/// working upstream call into an outage that looks like a relay fault.
+#[tokio::test]
+async fn attribution_is_emitted_in_both_namespaces() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(calls.clone());
+
+    // Success path, and the v2 envelope specifically: the legacy names must be
+    // present even when nothing in the request used them.
+    let ok = app
+        .clone()
+        .oneshot(signed_request_v2("AQEBAQEBAQEBAQEBAQEBAQ"))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::ACCEPTED);
+    for name in ["x-egress-relay-result", "x-codex-relay-result"] {
+        assert_eq!(
+            ok.headers().get(name).and_then(|v| v.to_str().ok()),
+            Some("upstream"),
+            "{name} must mark a forwarded reply as upstream"
+        );
+    }
+    let ids: Vec<&str> = ["x-egress-relay-request-id", "x-codex-relay-request-id"]
+        .iter()
+        .map(|name| {
+            ok.headers()
+                .get(*name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_else(|| panic!("{name} missing"))
+        })
+        .collect();
+    assert_eq!(
+        ids[0], ids[1],
+        "one id per response: a Worker log line must join to the same relay log \
+         line whichever name it read"
+    );
+
+    // Error path, reached with a legacy envelope: the new names must be present
+    // even when nothing in the request used them.
+    let mut bad_sig = signed_request();
+    *bad_sig
+        .headers_mut()
+        .get_mut("x-codex-relay-signature")
+        .unwrap() = axum::http::HeaderValue::from_static("invalid");
+    let rejected = app.oneshot(bad_sig).await.unwrap();
+
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    for name in ["x-egress-relay-result", "x-codex-relay-result"] {
+        assert_eq!(
+            rejected.headers().get(name).and_then(|v| v.to_str().ok()),
+            Some("error"),
+            "{name} must mark the relay's own verdict"
+        );
+    }
+    for name in ["x-egress-relay-error", "x-codex-relay-error"] {
+        assert_eq!(
+            rejected.headers().get(name).and_then(|v| v.to_str().ok()),
+            Some("relay_auth_error"),
+            "{name} must carry the machine code"
+        );
+    }
+}
+
+/// One envelope may not draw fields from both namespaces.
+///
+/// Resolving a mix -- by preferring one namespace, or by falling back per field
+/// -- would let a caller present two different envelopes and leave the relay to
+/// choose which one it authenticates. The fields are exactly what the signature
+/// covers, so the choice is security-relevant and is refused instead.
+#[tokio::test]
+async fn a_request_mixing_both_namespaces_is_refused() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut mixed = signed_request_v2("AQEBAQEBAQEBAQEBAQEBAQ");
+    mixed.headers_mut().insert(
+        "x-codex-relay-key-id",
+        axum::http::HeaderValue::from_static("current"),
+    );
+
+    let response = app_with(calls.clone()).oneshot(mixed).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-egress-relay-error")
+            .and_then(|v| v.to_str().ok()),
+        Some("relay_duplicate_control")
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "refused before the forwarder, so the ambiguous envelope never egresses"
+    );
+}
+
+/// Neither control namespace may appear inside the signed business header block.
+///
+/// Holding a signing key is not permission to inject relay control fields. A
+/// legacy-named control header in the block is the sharper case: it would reach
+/// an upstream, and on the response path an ingress still reading the old names
+/// treats it as the relay's own attribution. Both prefixes stay refused for as
+/// long as any live ingress reads either.
+#[tokio::test]
+async fn control_headers_in_the_signed_block_are_refused_in_both_namespaces() {
+    for (index, name) in [
+        "x-codex-relay-result",
+        "x-codex-relay-target",
+        "x-egress-relay-result",
+        "x-egress-relay-target",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let calls = Arc::new(AtomicUsize::new(0));
+        // Distinct nonce per case: a replay rejection would also be a 4xx and
+        // would hide whether the header policy fired at all.
+        let nonce = format!("A{}EBAQEBAQEBAQEBAQEBAQ", index);
+        let request = signed_request_with_header(name, "forged", &nonce);
+
+        let response = app_with(calls.clone()).oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{name} must be refused inside the signed block"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-egress-relay-error")
+                .and_then(|v| v.to_str().ok()),
+            Some("relay_forbidden_header"),
+            "{name} must be refused as a forbidden header, not some other fault"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "{name} must never reach the forwarder"
+        );
+    }
+}
+
+/// An upstream cannot forge attribution in either namespace.
+///
+/// The existing coverage proves this for the legacy names. Adding the new
+/// namespace matters more than it looks: the relay now *emits* both, so a
+/// scrub that removed only the generation it was about to write would leave the
+/// upstream's value in the other one, and an ingress reading that name would
+/// trust it.
+#[tokio::test]
+async fn upstream_cannot_forge_attribution_in_the_new_namespace() {
+    struct ForgingForwarder;
+
+    impl Forwarder for ForgingForwarder {
+        fn forward(
+            &self,
+            _request: ForwardRequest,
+        ) -> BoxFuture<'static, Result<ForwardResponse, ForwardError>> {
+            Box::pin(async move {
+                let mut headers = HeaderMap::new();
+                headers.insert("x-egress-relay-result", "error".parse().unwrap());
+                headers.insert("x-egress-relay-error", "relay_auth_error".parse().unwrap());
+                headers.insert(
+                    "x-egress-relay-request-id",
+                    "forged-by-upstream".parse().unwrap(),
+                );
+                Ok(ForwardResponse::from_bytes(
+                    StatusCode::OK,
+                    headers,
+                    Bytes::from_static(b"forwarded"),
+                ))
+            })
+        }
+    }
+
+    let mut keys = KeyRing::default();
+    keys.insert("current", SECRET);
+    let auth = AuthGate::new(keys, AuthPolicy::new(300));
+    let clock = Arc::new(|| NOW);
+    let app = build_app(RelayState::with_clock(
+        auth,
+        Arc::new(ForgingForwarder),
+        clock,
+    ));
+
+    let response = app.oneshot(signed_request()).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-egress-relay-result")
+            .and_then(|v| v.to_str().ok()),
+        Some("upstream"),
+        "the relay's verdict replaces the upstream's claim"
+    );
+    assert!(
+        response.headers().get("x-egress-relay-error").is_none(),
+        "the upstream's forged error code must be gone, not merely overwritten \
+         with another error"
+    );
+    assert_ne!(
+        response
+            .headers()
+            .get("x-egress-relay-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("forged-by-upstream"),
+        "correlation ids must come from the relay so they cannot be poisoned"
+    );
+}

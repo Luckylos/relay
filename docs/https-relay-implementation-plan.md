@@ -1,7 +1,7 @@
 # HTTPS Relay v1 实施计划
 
 > **归档（2026-08-21）：** 本文件是历史过程记录，不描述当前架构。
-> 计划已实施完成；`codex-egress-relay` 本机出口链路已退役，身份投影现由 Worker 单一持有。当前架构见 `README.md` 与 `relay/README.md`。
+> 计划已实施完成；`codex-egress-relay` 本机出口链路已退役，身份投影现由 Worker 单一持有。当前架构见 `README.md` 与 `egress-relay/README.md`；线协议已前进到 v2，差异见 `docs/relay-protocol-v2-delta.md`。
 
 依据：`docs/https-relay-design-v1.md`
 

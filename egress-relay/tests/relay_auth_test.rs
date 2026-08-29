@@ -182,11 +182,54 @@ fn rejects_malformed_signature_without_consuming_the_nonce() {
 fn rejects_invalid_protocol_version_before_signature_verification() {
     let mut gate = gate();
     let mut request = TestRequest::signed("current", CURRENT_KEY);
-    request.version = 2;
+    // A generation this build has never signed under. Deliberately not v2: v2 is
+    // now accepted, so asserting on it would have this test pass for the wrong
+    // reason the moment the version became real.
+    request.version = 3;
 
     assert!(matches!(
         gate.authenticate(NOW, request.auth_request()),
-        Err(AuthError::Protocol(ProtocolError::UnsupportedVersion(2)))
+        Err(AuthError::Protocol(ProtocolError::UnsupportedVersion(3)))
+    ));
+}
+
+#[test]
+fn accepts_a_valid_v2_signature() {
+    let mut gate = gate();
+    let mut request = TestRequest::signed("current", CURRENT_KEY);
+    request.version = 2;
+    request.signature = request.sign(CURRENT_KEY);
+
+    let context = gate.authenticate(NOW, request.auth_request()).unwrap();
+    assert_eq!(context.key_id, "current");
+}
+
+/// The two generations must not verify against each other.
+///
+/// This is the assertion that gives the version field meaning: if the domain
+/// separator were shared, a v1-signed request could be relabelled as v2 (or the
+/// reverse) and still verify, and the version number would be decoration. Both
+/// directions are checked because a one-sided test passes even if only one
+/// generation's separator is wired up.
+#[test]
+fn a_signature_from_one_generation_does_not_verify_as_the_other() {
+    let mut gate = gate();
+
+    let mut relabelled_as_v2 = TestRequest::signed("current", CURRENT_KEY);
+    relabelled_as_v2.version = 2;
+    assert!(matches!(
+        gate.authenticate(NOW, relabelled_as_v2.auth_request()),
+        Err(AuthError::InvalidSignature)
+    ));
+
+    let mut signed_v2 = TestRequest::signed("current", CURRENT_KEY);
+    signed_v2.version = 2;
+    signed_v2.signature = signed_v2.sign(CURRENT_KEY);
+    let mut relabelled_as_v1 = signed_v2;
+    relabelled_as_v1.version = 1;
+    assert!(matches!(
+        gate.authenticate(NOW, relabelled_as_v1.auth_request()),
+        Err(AuthError::InvalidSignature)
     ));
 }
 

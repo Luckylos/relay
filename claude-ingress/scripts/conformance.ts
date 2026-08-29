@@ -14,6 +14,14 @@ import { sha256Base64Url, signRelayRequest } from "../src/relay/signing";
 
 type Vector = {
   name: string;
+  /**
+   * Protocol generation this vector is signed under.
+   *
+   * Carried per vector rather than per payload so one run drives both
+   * generations. A runner that ignored this field would agree with the others on
+   * v1 and silently never exercise v2.
+   */
+  version: number;
   key_id: string;
   timestamp: number;
   method: string;
@@ -42,7 +50,7 @@ const results: Record<string, { canonical: string; signature: string }> = {};
 for (const vector of payload.vectors) {
   const body = new TextEncoder().encode(vector.body_utf8);
   const input = {
-    version: 1,
+    version: vector.version,
     keyId: vector.key_id,
     timestamp: vector.timestamp,
     nonce: payload.nonce,

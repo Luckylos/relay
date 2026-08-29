@@ -1,14 +1,14 @@
-# codex-relay
+# llm-egress-relay
 
 Monorepo for the HTTPS relay: two Cloudflare Worker ingresses and a Rust relay
 server that share one versioned wire protocol.
 
 ```
-codex-relay/
+llm-egress-relay/
 ├── codex-ingress/           Cloudflare Worker (TypeScript)  — Codex ingress
 ├── claude-ingress/          Cloudflare Worker (TypeScript)  — Claude ingress
 ├── egress-relay/           Rust binaries                   — VPS egress
-├── protocol/               Canonical wire-protocol fixture + cross-subtree gates
+├── protocol/               Canonical wire-protocol fixtures + cross-subtree gates
 └── docs/                   Design and implementation plans
 ```
 
@@ -77,12 +77,16 @@ extracted on its own and will typecheck, test and build.
 Concretely:
 
 - No source, test, config or build file reaches outside its own subtree.
-- Each subtree keeps **its own copy** of the protocol fixture:
-  - `relay/tests/fixtures/relay-protocol-v1.json`
-  - `codex-ingress/test/fixtures/relay-protocol-v1.json`
-  - `claude-ingress/test/fixtures/relay-protocol-v1.json`
-- `protocol/relay-protocol-v1.json` is the canonical copy. Byte-identity with the
-  three subtree copies is a **gated invariant**, not a filesystem fact.
+- Each subtree keeps **its own copy** of the protocol fixture, one per live
+  protocol generation:
+  - `egress-relay/tests/fixtures/relay-protocol-v{1,2}.json`
+  - `codex-ingress/test/fixtures/relay-protocol-v{1,2}.json`
+  - `claude-ingress/test/fixtures/relay-protocol-v{1,2}.json`
+- `protocol/relay-protocol-v{1,2}.json` are the canonical copies. Byte-identity
+  with the three subtree copies is a **gated invariant**, not a filesystem fact.
+- v1 is frozen, not retired. Its fixture and signing domain stay exactly as
+  shipped because a deployed v1 ingress can still be signing against them while
+  the relay is already on v2.
 
 That is the deliberate trade: physical sharing would couple the subtrees, so
 consistency is enforced by a check that fails loudly instead.
@@ -104,7 +108,7 @@ deployment silently degrades*.
 
 ```bash
 # Rust relay server
-cd relay
+cd egress-relay
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
@@ -130,12 +134,18 @@ python3 protocol/conformance.py
 ## The conformance gate
 
 The wire protocol is implemented four times:
-`relay/src/protocol/signing.rs`,
+`egress-relay/src/protocol/signing.rs`,
 `codex-ingress/src/relay/{protocol,signing}.ts`,
 `claude-ingress/src/relay/{protocol,signing}.ts`, and
-`relay/scripts/relay_probe.py`. `protocol/conformance.py` drives all four
+`egress-relay/scripts/relay_probe.py`. `protocol/conformance.py` drives all four
 over shared vectors and requires byte-identical canonical requests and HMAC
 signatures.
+
+Every vector runs once per live protocol generation, so the table below is
+exercised twice — under v1's `codex-relay-v1` signing domain and under v2's
+`egress-relay-v2`. A runner that ignored a vector's `version` field would pass v1
+while never signing a single v2 byte, which is why the generation is data and not
+a global constant.
 
 Vectors target the places where the languages disagree *by default*:
 
@@ -168,6 +178,6 @@ from the package directory). The relay's `KeyRing` is keyed by id, so this needs
 no relay-side change; the tradeoff is that the relay cannot tell the two Workers
 apart and so cannot revoke or rate-limit them independently.
 
-`relay/systemd/codex-https-relay.service` intentionally records the live
+`egress-relay/systemd/codex-https-relay.service` intentionally records the live
 deployment path (`/opt/codex-https-relay`), which is not this repository's
 location.

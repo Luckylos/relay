@@ -105,10 +105,21 @@ INTENTIONALLY_DIVERGENT: dict[str, str] = {
     "package-lock.json": "lockfile of the above; identical tree, different root name",
 }
 
-# `test/fixtures/relay-protocol-v1.json` is deliberately absent from both maps:
-# `conformance.py` already gates it against the canonical copy in `protocol/`,
-# which is a stronger check than mutual identity between the two packages.
-GATED_ELSEWHERE = frozenset({"test/fixtures/relay-protocol-v1.json"})
+# Protocol fixtures are deliberately absent from both maps: `conformance.py`
+# already gates each one against the canonical copy in `protocol/`, which is a
+# stronger check than mutual identity between the two packages.
+#
+# Derived from the canonical files rather than listed, so adding a protocol
+# generation does not require editing this manifest -- but derived from
+# `protocol/`, not from a filename pattern, so the exemption only exists while
+# the canonical copy that justifies it exists. A fixture dropped into a package
+# with no counterpart in `protocol/` is gated by nothing and still fails here.
+def _gated_elsewhere() -> frozenset[str]:
+    canonical = (ROOT / "protocol").glob("relay-protocol-v*.json")
+    return frozenset(f"test/fixtures/{path.name}" for path in canonical)
+
+
+GATED_ELSEWHERE = _gated_elsewhere()
 
 # Files only one package may carry, with the reason it must not be shared.
 PACKAGE_LOCAL: dict[str, dict[str, str]] = {

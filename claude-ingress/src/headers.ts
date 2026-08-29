@@ -71,8 +71,29 @@ export const SOURCE_REVEALING_HEADERS = [
  */
 export const CLOUDFLARE_HEADER_PREFIX = "cf-";
 
-/** Control headers are reserved for the relay envelope itself. */
-export const RELAY_CONTROL_PREFIX = "x-codex-relay-";
+/**
+ * Control headers are reserved for the relay envelope itself.
+ *
+ * Two prefixes, not one. The relay and both ingresses deploy independently, so
+ * during the migration window both envelope generations are live on the wire.
+ * Stripping only the current prefix would let an open caller forge
+ * `x-codex-relay-result` and have this Worker's own attribution read believe
+ * it. Both generations stay reserved permanently: dropping the legacy prefix
+ * from the strip set is what reopens the forgery path, not what closes it.
+ */
+export const RELAY_CONTROL_PREFIX = "x-egress-relay-";
+export const LEGACY_RELAY_CONTROL_PREFIX = "x-codex-relay-";
+
+const RELAY_CONTROL_PREFIXES = [
+  RELAY_CONTROL_PREFIX,
+  LEGACY_RELAY_CONTROL_PREFIX,
+] as const;
+
+/** True for a control header in either generation's namespace. */
+export function isRelayControlHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return RELAY_CONTROL_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
 
 const STRIPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set<string>([
   ...REQUEST_HOP_BY_HOP_HEADERS,
@@ -82,19 +103,20 @@ const STRIPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set<string>([
 /**
  * True when a client-supplied request header must not be forwarded upstream.
  *
- * The relay-control prefix is matched rather than listed so that adding an
+ * The relay-control prefixes are matched rather than listed so that adding an
  * envelope field later cannot accidentally open a forgery path.
  *
  * This matters more, not less, now that the Worker has no ingress credential:
  * the prefix rule is the single mechanism keeping every client-supplied
- * `x-codex-relay-*` header out of the signed block and off the wire, so an open
- * caller cannot forge an envelope field or its result attribution.
+ * control header -- in either generation's namespace -- out of the signed block
+ * and off the wire, so an open caller cannot forge an envelope field or its
+ * result attribution.
  */
 export function isStrippedRequestHeader(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     STRIPPED_REQUEST_HEADERS.has(lower) ||
-    lower.startsWith(RELAY_CONTROL_PREFIX) ||
+    isRelayControlHeader(lower) ||
     lower.startsWith(CLOUDFLARE_HEADER_PREFIX)
   );
 }
@@ -113,7 +135,7 @@ export function projectResponseHeaders(incoming: Headers): Headers {
     // the attribution step. Forwarding one would tell the client a relay exists
     // and hand it a correlation id it cannot use. Matched by prefix, not by a
     // fixed list, so a future control header cannot leak by being forgotten here.
-    if (name.toLowerCase().startsWith(RELAY_CONTROL_PREFIX)) {
+    if (isRelayControlHeader(name)) {
       continue;
     }
     output.set(name, value);

@@ -1,8 +1,8 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
-import { base64UrlDecode } from "../src/relay/protocol";
 import { asUpstream } from "./support/relay-stub";
+import { signedTarget } from "./support/signed-block";
 
 describe("Worker integration entrypoint", () => {
   it("runs the exported Worker handler through relay egress", async () => {
@@ -34,11 +34,7 @@ describe("Worker integration entrypoint", () => {
       const sent = upstream.mock.calls[0]?.[0] as Request;
       const bindings = env as unknown as { EGRESS_RELAY_URL: string };
       expect(sent.url).toBe(bindings.EGRESS_RELAY_URL);
-      expect(
-        new TextDecoder().decode(
-          base64UrlDecode(sent.headers.get("x-codex-relay-target") ?? ""),
-        ),
-      ).toBe("https://api.openai.com/v1/models?limit=1");
+      expect(signedTarget(sent)).toBe("https://api.openai.com/v1/models?limit=1");
     } finally {
       upstream.mockRestore();
     }
@@ -72,11 +68,7 @@ describe("Worker integration entrypoint", () => {
       // leave through the signed relay, not straight out of the Worker.
       const sent = upstream.mock.calls[0]?.[0] as Request;
       expect(sent.url).toBe(bindings.EGRESS_RELAY_URL);
-      expect(
-        new TextDecoder().decode(
-          base64UrlDecode(sent.headers.get("x-codex-relay-target") ?? ""),
-        ),
-      ).toBe("https://not-listed.example/v1/models");
+      expect(signedTarget(sent)).toBe("https://not-listed.example/v1/models");
     } finally {
       upstream.mockRestore();
     }

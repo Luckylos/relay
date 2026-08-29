@@ -289,17 +289,25 @@ describe("Claude Code cloak", () => {
 });
 
 describe("egress guarantees", () => {
-  it("refuses a client-forged relay envelope", async () => {
+  // Both namespaces, not just the current one. The legacy names stay reserved
+  // permanently: a live relay still reads them, so a caller that could smuggle
+  // `x-codex-relay-target` through would redirect this Worker's signed envelope
+  // at a host of its choosing. Dropping the legacy prefix from the strip set is
+  // what reopens that, which is why the retired generation is tested too.
+  it.each([
+    ["current", "x-egress-relay-"],
+    ["legacy", "x-codex-relay-"],
+  ])("refuses a client-forged %s relay envelope", async (_generation, prefix) => {
     // Being open to callers must not let a caller impersonate the Worker to the
-    // relay. Every x-codex-relay-* header is dropped before signing.
+    // relay. Every relay control header is dropped before signing.
     const spy = captureRelay();
     try {
       await worker.fetch(
         new Request("https://w.example/api.anthropic.com/v1/messages", {
           method: "POST",
           headers: {
-            "x-codex-relay-target": "aHR0cHM6Ly9hdHRhY2tlci5leGFtcGxl",
-            "x-codex-relay-result": "upstream",
+            [`${prefix}target`]: "aHR0cHM6Ly9hdHRhY2tlci5leGFtcGxl",
+            [`${prefix}result`]: "upstream",
             "content-type": "application/json",
           },
           body: "{}",
@@ -310,7 +318,8 @@ describe("egress guarantees", () => {
 
       const relayRequest = sentRequest(spy);
       expect(signedTarget(relayRequest)).toBe("https://api.anthropic.com/v1/messages");
-      expect(signedHeaders(relayRequest).has("x-codex-relay-result")).toBe(false);
+      expect(signedHeaders(relayRequest).has(`${prefix}result`)).toBe(false);
+      expect(signedHeaders(relayRequest).has(`${prefix}target`)).toBe(false);
     } finally {
       spy.mockRestore();
     }
@@ -322,7 +331,11 @@ describe("egress guarantees", () => {
       const response = await worker.fetch(claudeCodeRequest(), ENV, context());
 
       for (const [name] of response.headers) {
-        expect(name.toLowerCase().startsWith("x-codex-relay-")).toBe(false);
+        // Either generation leaking tells the client a relay exists and hands it
+        // a correlation id it has no use for.
+        expect(name.toLowerCase(), `${name} must not reach the client`).not.toMatch(
+          /^x-(egress|codex)-relay-/,
+        );
       }
     } finally {
       spy.mockRestore();

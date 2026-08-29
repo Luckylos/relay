@@ -31,6 +31,47 @@ const HEADER_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const BASE64URL = /^[A-Za-z0-9_-]*$/;
 const textEncoder = new TextEncoder();
 
+/**
+ * Signing-domain separator, one constant per protocol generation.
+ *
+ * This token is line 1 of every canonical request, so it is the one part of the
+ * wire contract that cannot be renamed in place: editing it changes every
+ * signature this build produces. It is therefore *versioned* rather than
+ * renamed -- v1 keeps its original token forever, so a relay still verifying v1
+ * accepts requests from an ingress that has not been redeployed yet.
+ */
+export const DOMAIN_SEPARATOR_V1 = "codex-relay-v1";
+
+/**
+ * v2 renames the project's own token. The `codex-` prefix predates this relay
+ * serving the Claude ingress as well, so it described where the code came from
+ * rather than what signs with it.
+ */
+export const DOMAIN_SEPARATOR_V2 = "egress-relay-v2";
+
+/** Highest generation this build emits. Verification still accepts v1. */
+export const CURRENT_VERSION = 2;
+
+/**
+ * Map a protocol generation to the domain separator it signs under.
+ *
+ * Rejecting an unknown version here (rather than defaulting) is what keeps a
+ * future v3 from being silently signed under v2's domain.
+ */
+function domainSeparator(version: number): string {
+  switch (version) {
+    case 1:
+      return DOMAIN_SEPARATOR_V1;
+    case 2:
+      return DOMAIN_SEPARATOR_V2;
+    default:
+      throw new ProtocolError(
+        "unsupported_version",
+        `unsupported relay protocol version: ${version}`,
+      );
+  }
+}
+
 function invalidField(field: string): never {
   throw new ProtocolError("invalid_field", `invalid relay field: ${field}`);
 }
@@ -123,9 +164,9 @@ function validateDigest(field: string, value: string): void {
 }
 
 export function buildCanonicalRequest(input: RelaySigningInput, bodySha256: string): string {
-  if (input.version !== 1) {
-    throw new ProtocolError("unsupported_version", `unsupported relay protocol version: ${input.version}`);
-  }
+  // Resolved before any other validation so an unsupported generation is
+  // reported as such rather than as whichever field happens to fail first.
+  const separator = domainSeparator(input.version);
   if (!Number.isSafeInteger(input.timestamp) || input.timestamp < 0) {
     invalidField("timestamp");
   }
@@ -149,7 +190,7 @@ export function buildCanonicalRequest(input: RelaySigningInput, bodySha256: stri
   const encodedTarget = base64UrlEncode(textEncoder.encode(input.target));
   const encodedHeaders = base64UrlEncode(textEncoder.encode(canonicalHeaders));
   return [
-    "codex-relay-v1",
+    separator,
     input.keyId,
     String(input.timestamp),
     input.nonce,

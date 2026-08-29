@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Cross-language conformance gate for relay protocol v1.
+"""Cross-language conformance gate for the relay wire protocol.
 
 Why this exists
 ---------------
-The wire protocol is implemented four times: `relay/src/protocol/signing.rs`
+The wire protocol is implemented four times: `egress-relay/src/protocol/signing.rs`
 (Rust server), `codex-ingress/src/relay/{protocol,signing}.ts` and
 `claude-ingress/src/relay/{protocol,signing}.ts` (two independently deployable
-Cloudflare Workers) and `relay/scripts/relay_probe.py` (operator probe).
+Cloudflare Workers) and `egress-relay/scripts/relay_probe.py` (operator probe).
 Before the monorepo they lived in separate repositories with a hand-copied
 fixture, so an edit to one side could silently break HMAC verification with
 nothing turning red.
@@ -53,18 +53,31 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-# The canonical fixture, plus the per-subtree copies each side reads.
+# Protocol generations this repository must keep working simultaneously.
 #
-# The copies are deliberate: `codex-ingress/`, `claude-ingress/` and
-# `relay/` must each stay independently extractable and runnable, so none
+# v1 stays listed after v2 ships: the two ingresses deploy independently, so a
+# relay carrying the new build serves a Worker that has not been redeployed yet.
+# Dropping v1 from the gate would let a v1 regression reach production during
+# exactly that window, and the failure would look like an ingress outage.
+GENERATIONS = (1, 2)
+
+# Where each generation's fixture lives, canonical copy first.
+#
+# The per-subtree copies are deliberate: `codex-ingress/`, `claude-ingress/` and
+# `egress-relay/` must each stay independently extractable and runnable, so none
 # may read across subtree boundaries. Byte-identity is therefore a gated
 # invariant rather than a filesystem fact.
-CANONICAL_FIXTURE = ROOT / "protocol" / "relay-protocol-v1.json"
-FIXTURE_COPIES = (
-    ROOT / "egress-relay" / "tests" / "fixtures" / "relay-protocol-v1.json",
-    ROOT / "codex-ingress" / "test" / "fixtures" / "relay-protocol-v1.json",
-    ROOT / "claude-ingress" / "test" / "fixtures" / "relay-protocol-v1.json",
-)
+def canonical_fixture(version: int) -> pathlib.Path:
+    return ROOT / "protocol" / f"relay-protocol-v{version}.json"
+
+
+def fixture_copies(version: int) -> tuple[pathlib.Path, ...]:
+    name = f"relay-protocol-v{version}.json"
+    return (
+        ROOT / "egress-relay" / "tests" / "fixtures" / name,
+        ROOT / "codex-ingress" / "test" / "fixtures" / name,
+        ROOT / "claude-ingress" / "test" / "fixtures" / name,
+    )
 
 # The two Worker packages, each driven through its own copy of the protocol code.
 TS_PACKAGES = (
@@ -74,30 +87,49 @@ TS_PACKAGES = (
 
 
 def check_fixture_copies() -> int:
-    """Require every subtree's fixture to match the canonical bytes exactly."""
-    if not CANONICAL_FIXTURE.is_file():
-        print(f"FAIL: canonical fixture missing at {CANONICAL_FIXTURE}")
-        return 1
+    """Require every subtree's fixture to match the canonical bytes exactly.
 
-    canonical = CANONICAL_FIXTURE.read_bytes()
-    digest = hashlib.sha256(canonical).hexdigest()
-    print(f"canonical fixture sha256={digest}")
-
+    Checked per generation. A single combined check would let a missing v2 copy
+    pass as long as v1 matched, which is the drift this gate exists to catch.
+    """
     failures = 0
-    for copy in FIXTURE_COPIES:
-        relative = copy.relative_to(ROOT)
-        if not copy.is_file():
-            print(f"FAIL {relative}: missing")
+    for version in GENERATIONS:
+        canonical_path = canonical_fixture(version)
+        if not canonical_path.is_file():
+            print(f"FAIL: canonical v{version} fixture missing at {canonical_path}")
             failures += 1
             continue
-        if copy.read_bytes() != canonical:
+
+        canonical = canonical_path.read_bytes()
+        digest = hashlib.sha256(canonical).hexdigest()
+        print(f"canonical v{version} fixture sha256={digest}")
+
+        # The version field must match the filename. A copy-paste that left
+        # v1's version in the v2 fixture would otherwise sign every "v2" vector
+        # under v1's domain, and every implementation would agree with itself.
+        declared = json.loads(canonical)["version"]
+        if declared != version:
             print(
-                f"FAIL {relative}: drifted from protocol/relay-protocol-v1.json "
-                f"(sha256={hashlib.sha256(copy.read_bytes()).hexdigest()})"
+                f"FAIL {canonical_path.relative_to(ROOT)}: declares version "
+                f"{declared}, filename says v{version}"
             )
             failures += 1
-            continue
-        print(f"ok   {relative}")
+
+        for copy in fixture_copies(version):
+            relative = copy.relative_to(ROOT)
+            if not copy.is_file():
+                print(f"FAIL {relative}: missing")
+                failures += 1
+                continue
+            if copy.read_bytes() != canonical:
+                print(
+                    f"FAIL {relative}: drifted from "
+                    f"protocol/relay-protocol-v{version}.json "
+                    f"(sha256={hashlib.sha256(copy.read_bytes()).hexdigest()})"
+                )
+                failures += 1
+                continue
+            print(f"ok   {relative}")
 
     return failures
 
@@ -105,8 +137,9 @@ SECRET = "conformance-secret-not-a-real-key"
 NONCE = base64.urlsafe_b64encode(bytes(range(16))).decode().rstrip("=")
 
 
-def vectors() -> list[dict]:
-    """Generated vectors, ordered so a failure names the property it broke."""
+def base_vectors() -> list[dict]:
+    """Generation-independent vectors, ordered so a failure names the property
+    it broke."""
     return [
         {
             "name": "frozen-fixture-parity",
@@ -189,6 +222,22 @@ def vectors() -> list[dict]:
             "body_utf8": "",
         },
     ]
+
+
+def vectors() -> list[dict]:
+    """Every base vector under every live generation.
+
+    Cross-multiplied rather than tagging a few vectors v2: the generations differ
+    only on canonical line 1, so a suite that exercised v2 on one narrow vector
+    could miss a v2-only canonicalization regression in header ordering or
+    whitespace folding. The vector name carries the version so a failure names
+    both the property and the generation.
+    """
+    expanded = []
+    for version in GENERATIONS:
+        for vector in base_vectors():
+            expanded.append({**vector, "name": f"v{version}:{vector['name']}", "version": version})
+    return expanded
 
 
 def payload() -> dict:
@@ -290,6 +339,7 @@ def python_results(data: dict) -> dict:
             vector["target"],
             digest,
             block,
+            version=vector["version"],
         )
         signature = relay_probe.b64u(
             hmac.new(
@@ -347,14 +397,14 @@ def main() -> int:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
 
-    print("== relay protocol v1 fixture copies ==")
+    print("== relay protocol fixture copies ==")
     fixture_failures = check_fixture_copies()
     print()
 
     stdin = json.dumps(data, ensure_ascii=False)
 
     with tempfile.TemporaryDirectory() as scratch:
-        print("== relay protocol v1 cross-language conformance ==")
+        print("== relay protocol cross-language conformance ==")
         results = {
             "rust": run(
                 "rust",
@@ -376,7 +426,8 @@ def main() -> int:
     print(
         f"RESULT: all {len(vectors())} vectors agree across "
         f"{' / '.join(sorted(results))}; "
-        f"{len(FIXTURE_COPIES)} fixture copies byte-identical"
+        f"{len(GENERATIONS) * len(fixture_copies(GENERATIONS[0]))} "
+        "fixture copies byte-identical"
     )
     return 0
 

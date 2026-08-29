@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { sendViaRelay } from "../src/relay/client";
-import { canonicalizeHeaders, base64UrlDecode } from "../src/relay/protocol";
+import {
+  CURRENT_VERSION,
+  canonicalizeHeaders,
+  base64UrlDecode,
+} from "../src/relay/protocol";
 import { signRelayRequest } from "../src/relay/signing";
 import { parseTarget } from "../src/target";
+import { asUpstream } from "./support/relay-stub";
 import worker from "../src/index";
 
 const SECRET = "relay-test-secret";
@@ -23,14 +28,12 @@ describe("relay client wire protocol", () => {
     let seen: Request | undefined;
     // A real relay stamps attribution on every reply, so the stub must too:
     // without it the response is (correctly) read as a relay failure.
-    const upstream = new Response("upstream-body", {
-      status: 201,
-      headers: {
-        "content-type": "text/plain",
-        "x-codex-relay-result": "upstream",
-        "x-codex-relay-request-id": "fixture-id",
-      },
-    });
+    const upstream = asUpstream(
+      new Response("upstream-body", {
+        status: 201,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
 
     const response = await sendViaRelay({
       relayUrl: RELAY_URL,
@@ -52,16 +55,28 @@ describe("relay client wire protocol", () => {
 
     // The business method and target travel as control headers, never as the
     // relay request's own method or path.
-    expect(sent.headers.get("x-codex-relay-version")).toBe("1");
-    expect(sent.headers.get("x-codex-relay-key-id")).toBe(KEY_ID);
-    expect(sent.headers.get("x-codex-relay-method")).toBe("POST");
-    expect(decodeUtf8(sent.headers.get("x-codex-relay-target") ?? "")).toBe(
+    //
+    // Asserted in the current namespace only. The Worker sends exactly one
+    // generation, and pinning which one is the point: a dual read here would let
+    // a regression that emitted the legacy names keep passing.
+    expect(sent.headers.get("x-egress-relay-version")).toBe(String(CURRENT_VERSION));
+    expect(sent.headers.get("x-egress-relay-key-id")).toBe(KEY_ID);
+    expect(sent.headers.get("x-egress-relay-method")).toBe("POST");
+    expect(decodeUtf8(sent.headers.get("x-egress-relay-target") ?? "")).toBe(
       "https://api.openai.com/v1/responses?stream=true",
     );
 
+    // A mixed envelope is refused by the relay as `relay_duplicate_control`, so
+    // emitting both generations at once would be an outage, not compatibility.
+    for (const [name] of sent.headers) {
+      expect(name.toLowerCase(), `${name} is a stale envelope name`).not.toMatch(
+        /^x-codex-relay-/,
+      );
+    }
+
     // Business headers move as a canonical block, so the relay can verify the
     // exact bytes that were signed.
-    const block = decodeUtf8(sent.headers.get("x-codex-relay-headers") ?? "");
+    const block = decodeUtf8(sent.headers.get("x-egress-relay-headers") ?? "");
     expect(block).toBe(
       canonicalizeHeaders([
         ["authorization", "Bearer token"],
@@ -74,15 +89,19 @@ describe("relay client wire protocol", () => {
       new TextEncoder().encode("payload"),
     );
 
-    const timestamp = Number(sent.headers.get("x-codex-relay-timestamp"));
+    const timestamp = Number(sent.headers.get("x-egress-relay-timestamp"));
     expect(Number.isSafeInteger(timestamp)).toBe(true);
 
+    // Signed under the same generation the envelope names declare. A relay picks
+    // the verifying domain from those names, so a signature produced under a
+    // different generation fails as a bad signature -- an authentication error
+    // whose real cause is a half-finished rename.
     const expected = await signRelayRequest(
       {
-        version: 1,
+        version: CURRENT_VERSION,
         keyId: KEY_ID,
         timestamp,
-        nonce: sent.headers.get("x-codex-relay-nonce") ?? "",
+        nonce: sent.headers.get("x-egress-relay-nonce") ?? "",
         method: "POST",
         target: "https://api.openai.com/v1/responses?stream=true",
         headers: [
@@ -93,7 +112,7 @@ describe("relay client wire protocol", () => {
       },
       SECRET,
     );
-    expect(sent.headers.get("x-codex-relay-signature")).toBe(expected);
+    expect(sent.headers.get("x-egress-relay-signature")).toBe(expected);
 
     expect(response.status).toBe(201);
     expect(await response.text()).toBe("upstream-body");
@@ -159,8 +178,33 @@ describe("worker relay fail-closed routing", () => {
   });
 });
 
-describe("relay error attribution", () => {
-  // A relay-generated reply, as the relay now stamps it.
+/**
+ * Attribution is read from whichever namespace the relay answered in.
+ *
+ * The relay and this Worker deploy independently, so all three shapes are live
+ * across the migration: an upgraded relay stamps both generations, one that has
+ * not been upgraded stamps only the legacy names, and a post-window relay stamps
+ * only the current ones. Testing a single shape would let a one-namespace read
+ * pass here while turning the other relay into a total outage -- every request
+ * failing closed to `502 relay_unavailable` with nothing actually broken.
+ */
+describe.each([
+  ["current-only", ["x-egress-relay-"]],
+  ["legacy-only", ["x-codex-relay-"]],
+  ["dual-stamping", ["x-egress-relay-", "x-codex-relay-"]],
+] as const)("relay error attribution from a %s relay", (_shape, prefixes) => {
+  /** The same control fields, named in whichever generations this relay stamps. */
+  function control(fields: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = {};
+    for (const prefix of prefixes) {
+      for (const [field, value] of Object.entries(fields)) {
+        headers[`${prefix}${field}`] = value;
+      }
+    }
+    return headers;
+  }
+
+  // A relay-generated reply, as the relay stamps it.
   function relayError(status: number, machineCode: string): Response {
     return new Response(
       JSON.stringify({ error: { type: machineCode, message: "relay request rejected" } }),
@@ -168,9 +212,7 @@ describe("relay error attribution", () => {
         status,
         headers: {
           "content-type": "application/json",
-          "x-codex-relay-result": "error",
-          "x-codex-relay-error": machineCode,
-          "x-codex-relay-request-id": "abc123",
+          ...control({ result: "error", error: machineCode, "request-id": "abc123" }),
         },
       },
     );
@@ -244,8 +286,7 @@ describe("relay error attribution", () => {
         status,
         headers: {
           "content-type": "application/json",
-          "x-codex-relay-result": "upstream",
-          "x-codex-relay-request-id": "abc123",
+          ...control({ result: "upstream", "request-id": "abc123" }),
         },
       });
 
@@ -264,16 +305,16 @@ describe("relay error attribution", () => {
       relayError(401, "relay_auth_error"),
       new Response("ok", {
         status: 200,
-        headers: {
-          "x-codex-relay-result": "upstream",
-          "x-codex-relay-request-id": "abc123",
-        },
+        headers: control({ result: "upstream", "request-id": "abc123" }),
       }),
     ]) {
       const response = await send(upstream);
       for (const [name] of response.headers) {
+        // Both namespaces, not just the one this relay stamped: the strip is by
+        // prefix, and a leak of either generation tells the client a relay exists
+        // and hands it a correlation id it has no use for.
         expect(name.toLowerCase(), `${name} must not reach the client`).not.toMatch(
-          /^x-codex-relay-/,
+          /^x-(egress|codex)-relay-/,
         );
       }
     }

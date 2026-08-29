@@ -26,6 +26,12 @@ struct Payload {
 #[derive(Debug, Deserialize)]
 struct Vector {
     name: String,
+    /// Protocol generation this vector is signed under.
+    ///
+    /// Carried per vector rather than per payload so one run drives both
+    /// generations. A runner that ignored this field would agree with the others
+    /// on v1 and silently never exercise v2.
+    version: u8,
     key_id: String,
     timestamp: i64,
     method: String,
@@ -51,7 +57,7 @@ fn main() {
     for vector in &payload.vectors {
         let body = vector.body_utf8.as_bytes();
         let input = RelaySigningInput {
-            version: 1,
+            version: vector.version,
             key_id: &vector.key_id,
             timestamp: vector.timestamp,
             nonce: &payload.nonce,

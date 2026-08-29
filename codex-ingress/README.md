@@ -68,9 +68,11 @@ upstream key, so a caller can never spend someone else's quota.
 
 Two properties are deliberately retained despite the open ingress:
 
-- Every client-supplied `x-codex-relay-*` request header is stripped before
-  egress (`src/headers.ts`), so an open caller still cannot forge the
-  Worker→relay envelope or its result attribution.
+- Every client-supplied relay control header is stripped before egress
+  (`src/headers.ts`) — both the current `x-egress-relay-*` prefix and the retired
+  `x-codex-relay-*` one — so an open caller still cannot forge the Worker→relay
+  envelope or its result attribution. A live relay reads both, so dropping the
+  retired prefix from the strip set would reopen the forgery it prevents.
 - `ALLOWED_UPSTREAM_HOSTS` can bound *what* an open caller reaches, but the
   deployed value is empty: any public HTTPS host is reachable. That is a
   deliberate operator decision, and it means abuse of this Worker egresses from
@@ -96,24 +98,33 @@ the exact bytes that were signed:
 
 ```text
 POST <EGRESS_RELAY_URL>
-x-codex-relay-version      1
-x-codex-relay-key-id       <key id>
-x-codex-relay-timestamp    <unix seconds>
-x-codex-relay-nonce        <base64url, 16 random bytes>
-x-codex-relay-method       <business method>
-x-codex-relay-target       <base64url absolute https URL>
-x-codex-relay-headers      <base64url canonical header block>
-x-codex-relay-body-sha256  <base64url SHA-256 of body>
-x-codex-relay-signature    <base64url HMAC-SHA256 over the canonical request>
+x-egress-relay-version      2
+x-egress-relay-key-id       <key id>
+x-egress-relay-timestamp    <unix seconds>
+x-egress-relay-nonce        <base64url, 16 random bytes>
+x-egress-relay-method       <business method>
+x-egress-relay-target       <base64url absolute https URL>
+x-egress-relay-headers      <base64url canonical header block>
+x-egress-relay-body-sha256  <base64url SHA-256 of body>
+x-egress-relay-signature    <base64url HMAC-SHA256 over the canonical request>
 ```
 
-The canonical request and its encoding are frozen by a language-independent
-fixture shared with the Rust relay, so a change on either side that breaks
-compatibility fails the other side's tests:
+The retired `x-codex-relay-` prefix named the project's origin rather than the
+hop, and v1 still uses it: the relay reads both generations during the migration
+window, so the old names remain reserved rather than free.
+
+The canonical request and its encoding are frozen per generation by
+language-independent fixtures shared with the Rust relay, so a change on either
+side that breaks compatibility fails the other side's tests:
 
 ```text
-test/fixtures/relay-protocol-v1.json
+test/fixtures/relay-protocol-v1.json   frozen; the signing domain stays codex-relay-v1
+test/fixtures/relay-protocol-v2.json   current; egress-relay-v2
 ```
+
+Only line 1 of the canonical request — the signing domain — differs between the
+two. Everything else is byte-for-byte the same, which is what makes the pair
+reviewable as a version bump rather than a protocol rewrite.
 
 The relay verifies the signature, rejects a stale timestamp or a replayed nonce,
 re-derives the upstream request from the signed block, and streams the response
@@ -132,10 +143,12 @@ signed and reach the upstream. Three groups never do:
   hand the upstream the real client IP and defeat the relay. The prefix rule is
   the rule and the named list is documentation: `cf-pseudo-ipv4` reached a real
   upstream because it was added to the platform after the list was written;
-- anything under the `x-codex-relay-` prefix, so a client cannot forge an
-  envelope field or its result attribution. With no ingress credential in front
-  of the Worker, this prefix rule is the only thing standing between an open
-  caller and a forged relay envelope.
+- anything under either relay control prefix — `x-egress-relay-` and the retired
+  `x-codex-relay-` — so a client cannot forge an envelope field or its result
+  attribution. With no ingress credential in front of the Worker, this prefix
+  rule is the only thing standing between an open caller and a forged relay
+  envelope, and it has to cover both generations for as long as any relay reads
+  the old names.
 
 ## Redirects
 
@@ -228,8 +241,8 @@ ALLOWED_UPSTREAM_HOSTS  comma-separated upstream hostname allowlist
 ```
 
 `EGRESS_RELAY_SECRET` authenticates the Worker to the relay. It is never
-accepted from, nor exposed to, a client: the `x-codex-relay-*` request-header
-strip exists so an open caller cannot forge a signed envelope with it.
+accepted from, nor exposed to, a client: the relay control-header strip — both
+prefixes — exists so an open caller cannot forge a signed envelope with it.
 
 `ALLOWED_UPSTREAM_HOSTS` is matched case-insensitively against the exact
 hostname; a leading dot (`.openai.com`) also matches subdomains, and the parent
@@ -283,10 +296,10 @@ CI runs the same `npm ci` + `npm run check` gate.
 Verified:
 
 - `npm run check`: typecheck, full Vitest suite, Wrangler dry-run build;
-- relay protocol v1 signing against the shared fixture, byte-compatible with the
-  Rust implementation;
-- open ingress: no client credential required, and a client-supplied
-  `x-codex-relay-*` header cannot forge the relay envelope;
+- relay protocol v1 and v2 signing against the shared fixtures, byte-compatible
+  with the Rust implementation;
+- open ingress: no client credential required, and a client-supplied control
+  header cannot forge the relay envelope under either prefix;
 - upstream allowlist: a disallowed target fails `400 invalid_target` with **zero**
   egress calls, checked before the body is read;
 - header hygiene: platform and source-revealing headers stripped, relay control

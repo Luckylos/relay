@@ -1,7 +1,9 @@
 # HTTPS Relay 设计冻结（v1）
 
 > **归档（2026-08-21）：** 本文件是历史过程记录，不描述当前架构。
-> 计划已实施完成；`codex-egress-relay` 本机出口链路已退役，身份投影现由 Worker 单一持有。当前架构见 `README.md` 与 `relay/README.md`。
+> 计划已实施完成；`codex-egress-relay` 本机出口链路已退役，身份投影现由 Worker 单一持有。当前架构见 `README.md` 与 `egress-relay/README.md`。
+>
+> 线协议已从本文冻结的 v1 前进到 v2（控制头 `x-egress-relay-*`、签名域 `egress-relay-v2`）。v1 仍被 relay 接受，未退役；本文正文中的 `X-Codex-Relay-*` 与 `codex-relay-v1` 是 v1 的准确描述，差异见 `docs/relay-protocol-v2-delta.md`。
 
 状态：**已冻结，可进入 TDD 实施；本文件不代表已部署或已通过真实边缘验收。**
 

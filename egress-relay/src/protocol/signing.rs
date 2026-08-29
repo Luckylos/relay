@@ -16,6 +16,35 @@ pub enum ProtocolError {
     InvalidSecret,
 }
 
+/// Signing-domain separator, one constant per protocol generation.
+///
+/// This token is line 1 of every canonical request, so it is the one part of the
+/// wire contract that cannot be renamed in place: editing it changes every
+/// signature this build produces and every signature it can verify. It is
+/// therefore *versioned* rather than renamed -- v1 keeps its original token
+/// forever, so a relay running this build still verifies requests from an
+/// ingress that has not been redeployed yet.
+pub const DOMAIN_SEPARATOR_V1: &str = "codex-relay-v1";
+/// v2 renames the project's own token. The `codex-` prefix predates this relay
+/// serving the Claude ingress as well, so it described where the code came from
+/// rather than what signs with it.
+pub const DOMAIN_SEPARATOR_V2: &str = "egress-relay-v2";
+
+/// Highest generation this build emits. Verification still accepts v1.
+pub const CURRENT_VERSION: u8 = 2;
+
+/// Map a protocol generation to the domain separator it signs under.
+///
+/// Rejecting an unknown version here (rather than defaulting) is what keeps a
+/// future v3 from being silently verified against v2's domain.
+fn domain_separator(version: u8) -> Result<&'static str, ProtocolError> {
+    match version {
+        1 => Ok(DOMAIN_SEPARATOR_V1),
+        2 => Ok(DOMAIN_SEPARATOR_V2),
+        other => Err(ProtocolError::UnsupportedVersion(other)),
+    }
+}
+
 #[derive(Debug)]
 pub struct RelaySigningInput<'a> {
     pub version: u8,
@@ -128,9 +157,9 @@ fn validate_digest(value: &str) -> Result<(), ProtocolError> {
 }
 
 pub fn build_canonical_request(input: &RelaySigningInput<'_>) -> Result<String, ProtocolError> {
-    if input.version != 1 {
-        return Err(ProtocolError::UnsupportedVersion(input.version));
-    }
+    // Resolved before any other validation so an unsupported generation is
+    // reported as such rather than as whichever field happens to fail first.
+    let separator = domain_separator(input.version)?;
     if input.timestamp < 0 {
         return Err(ProtocolError::InvalidField("timestamp"));
     }
@@ -160,7 +189,7 @@ pub fn build_canonical_request(input: &RelaySigningInput<'_>) -> Result<String, 
     let canonical_headers = canonicalize_headers(input.headers)?;
 
     Ok([
-        "codex-relay-v1".to_owned(),
+        separator.to_owned(),
         input.key_id.to_owned(),
         input.timestamp.to_string(),
         input.nonce.to_owned(),

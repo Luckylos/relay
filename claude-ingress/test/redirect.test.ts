@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
-import { base64UrlDecode } from "../src/relay/protocol";
 import { RedirectError, rewriteLocation } from "../src/redirect";
 import { parseTarget } from "../src/target";
 import { asUpstream } from "./support/relay-stub";
+import { signedTarget } from "./support/signed-block";
 
 const WORKER_ORIGIN = "https://worker.example";
 
@@ -251,11 +251,9 @@ describe("Worker redirect handling end to end", () => {
     expect(second).toHaveBeenCalledTimes(1);
     const relayRequest = second.mock.calls[0][0];
     expect(new URL(relayRequest.url).origin).toBe("https://relay.internal.example");
-    // The target travels base64url-encoded, so decode before comparing.
-    const relayTarget = new TextDecoder().decode(
-      base64UrlDecode(relayRequest.headers.get("x-codex-relay-target") ?? ""),
-    );
-    expect(relayTarget).toBe("https://api.example.com/v2/moved");
+    // The target travels base64url-encoded in the envelope, so read it back
+    // through the same helper that knows the envelope's shape.
+    expect(signedTarget(relayRequest)).toBe("https://api.example.com/v2/moved");
 
     vi.unstubAllGlobals();
   });

@@ -41,7 +41,108 @@ pub const DEFAULT_MAX_CONCURRENCY: usize = 64;
 /// work an unauthenticated caller could otherwise force the relay to do.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const MAX_CANONICAL_HEADERS_BYTES: usize = 32 * 1024;
-const CONTROL_PREFIX: &str = "x-codex-relay-";
+
+/// Envelope namespace this build emits and prefers on the way in.
+const CONTROL_PREFIX: &str = "x-egress-relay-";
+
+/// The namespace this relay used before it served more than the Codex ingress.
+///
+/// Still read, because the two ingresses deploy independently: a relay carrying
+/// this build runs for a while in front of a Worker that has not been
+/// redeployed, and dropping the old names would take that Worker's traffic down
+/// at the moment the relay restarted. It is removed once both ingresses are
+/// confirmed on the new namespace, which is a separate change.
+const LEGACY_CONTROL_PREFIX: &str = "x-codex-relay-";
+
+/// Which envelope namespace one request is speaking.
+///
+/// Carried explicitly rather than re-derived per field, so a request cannot mix
+/// the two namespaces and so the reply is attributed in the same namespace the
+/// caller understands -- a Worker reading only the old names treats a reply with
+/// only the new ones as unattributed and fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlGeneration {
+    Legacy,
+    Current,
+}
+
+impl ControlGeneration {
+    fn names(self) -> &'static ControlNames {
+        match self {
+            Self::Legacy => &LEGACY_NAMES,
+            Self::Current => &CURRENT_NAMES,
+        }
+    }
+}
+
+/// Envelope field names for one namespace.
+///
+/// Spelled out per generation instead of concatenated from a prefix because
+/// these reach `HeaderName::from_static`, which is infallible only for names
+/// known at compile time -- building them at runtime would trade a compile-time
+/// guarantee for a panic path on the request hot path.
+struct ControlNames {
+    version: &'static str,
+    key_id: &'static str,
+    timestamp: &'static str,
+    nonce: &'static str,
+    method: &'static str,
+    target: &'static str,
+    body_sha256: &'static str,
+    headers: &'static str,
+    signature: &'static str,
+}
+
+const CURRENT_NAMES: ControlNames = ControlNames {
+    version: "x-egress-relay-version",
+    key_id: "x-egress-relay-key-id",
+    timestamp: "x-egress-relay-timestamp",
+    nonce: "x-egress-relay-nonce",
+    method: "x-egress-relay-method",
+    target: "x-egress-relay-target",
+    body_sha256: "x-egress-relay-body-sha256",
+    headers: "x-egress-relay-headers",
+    signature: "x-egress-relay-signature",
+};
+
+const LEGACY_NAMES: ControlNames = ControlNames {
+    version: "x-codex-relay-version",
+    key_id: "x-codex-relay-key-id",
+    timestamp: "x-codex-relay-timestamp",
+    nonce: "x-codex-relay-nonce",
+    method: "x-codex-relay-method",
+    target: "x-codex-relay-target",
+    body_sha256: "x-codex-relay-body-sha256",
+    headers: "x-codex-relay-headers",
+    signature: "x-codex-relay-signature",
+};
+
+/// Decide which namespace a request is using, before any field is read.
+///
+/// Both namespaces present is refused rather than resolved: picking one would
+/// let a caller present two different envelopes and have the relay choose, and
+/// the fields are what the signature covers.
+///
+/// No control header at all resolves to `Legacy`. The field reads that follow
+/// then fail, and the rejection carries names *both* generations of ingress can
+/// read -- the conservative default while the old namespace is still supported.
+fn detect_generation(headers: &HeaderMap) -> Result<ControlGeneration, Rejection> {
+    let mut current = false;
+    let mut legacy = false;
+    for name in headers.keys() {
+        let name = name.as_str();
+        if name.starts_with(CONTROL_PREFIX) {
+            current = true;
+        } else if name.starts_with(LEGACY_CONTROL_PREFIX) {
+            legacy = true;
+        }
+    }
+    match (current, legacy) {
+        (true, true) => Err(reject(StatusCode::BAD_REQUEST, "relay_duplicate_control")),
+        (true, false) => Ok(ControlGeneration::Current),
+        (false, true) | (false, false) => Ok(ControlGeneration::Legacy),
+    }
+}
 
 /// Headers that must never appear in a canonical header block.
 ///
@@ -58,8 +159,9 @@ const CONTROL_PREFIX: &str = "x-codex-relay-";
 ///   strips them on its side, but the relay is independently deployable and
 ///   cannot delegate this invariant to its caller.
 ///
-/// Kept sorted so `x-codex-relay-*` (handled by CONTROL_PREFIX) is the only
-/// pattern rule and everything else is an exact match.
+/// Kept sorted so the two relay control namespaces (handled by prefix in
+/// `decode_header_block`) are the only pattern rules and everything else here is
+/// an exact match.
 const FORBIDDEN_HEADERS: &[&str] = &[
     "cdn-loop",
     "cf-connecting-ip",
@@ -144,9 +246,20 @@ pub trait Forwarder: Send + Sync + 'static {
 /// indistinguishable from a relay that could not reach it. Without attribution
 /// the Worker must guess, and guessing wrong either leaks the relay's auth
 /// verdict to the client or masks a genuine upstream failure.
-const RESULT_HEADER: &str = "x-codex-relay-result";
-const ERROR_HEADER: &str = "x-codex-relay-error";
-const REQUEST_ID_HEADER: &str = "x-codex-relay-request-id";
+/// Attribution field names, one triple per namespace.
+///
+/// Both are written on every reply. The alternative -- answering only in the
+/// namespace the request arrived in -- fails on the response path the moment a
+/// caller sends no control headers at all: the request is rejected before any
+/// generation could be inferred, and an ingress reading the other namespace sees
+/// an unattributed reply and fails closed to `502 relay_unavailable`, hiding the
+/// real reason. Emitting both keeps attribution readable by either ingress
+/// during the window where they deploy independently, at the cost of three
+/// duplicate response headers that never reach a client (both ingresses strip
+/// the whole namespace by prefix).
+const RESULT_HEADERS: [&str; 2] = ["x-egress-relay-result", "x-codex-relay-result"];
+const ERROR_HEADERS: [&str; 2] = ["x-egress-relay-error", "x-codex-relay-error"];
+const REQUEST_ID_HEADERS: [&str; 2] = ["x-egress-relay-request-id", "x-codex-relay-request-id"];
 const RESULT_UPSTREAM: &str = "upstream";
 const RESULT_ERROR: &str = "error";
 
@@ -169,30 +282,45 @@ fn new_request_id() -> String {
 fn stamp_control_headers(response: &mut Response, result: &str, error_type: Option<&str>) {
     let headers = response.headers_mut();
 
-    // Remove first, unconditionally. An upstream that sets `x-codex-relay-result:
-    // upstream` on its own reply would otherwise forge attribution and convince
-    // the Worker to pass a relay-shaped error through verbatim. The relay is the
-    // only party entitled to speak in this namespace.
-    headers.remove(RESULT_HEADER);
-    headers.remove(ERROR_HEADER);
-    headers.remove(REQUEST_ID_HEADER);
+    // Remove first, unconditionally, in *both* namespaces. An upstream that sets
+    // `x-egress-relay-result: upstream` (or the legacy name) on its own reply
+    // would otherwise forge attribution and convince the Worker to pass a
+    // relay-shaped error through verbatim. The relay is the only party entitled
+    // to speak in either namespace, so a name still read by any live ingress
+    // must still be scrubbed here.
+    for name in RESULT_HEADERS
+        .iter()
+        .chain(ERROR_HEADERS.iter())
+        .chain(REQUEST_ID_HEADERS.iter())
+    {
+        headers.remove(*name);
+    }
 
-    headers.insert(
-        HeaderName::from_static(RESULT_HEADER),
-        HeaderValue::from_static(if result == RESULT_UPSTREAM {
-            RESULT_UPSTREAM
-        } else {
-            RESULT_ERROR
-        }),
-    );
+    let result = HeaderValue::from_static(if result == RESULT_UPSTREAM {
+        RESULT_UPSTREAM
+    } else {
+        RESULT_ERROR
+    });
+    for name in RESULT_HEADERS {
+        headers.insert(HeaderName::from_static(name), result.clone());
+    }
+
     if let Some(error_type) = error_type {
         // Machine codes are internal `&'static str` constants, never caller input.
         if let Ok(value) = HeaderValue::from_str(error_type) {
-            headers.insert(HeaderName::from_static(ERROR_HEADER), value);
+            for name in ERROR_HEADERS {
+                headers.insert(HeaderName::from_static(name), value.clone());
+            }
         }
     }
+
+    // One id per response, not one per namespace: the two names carry the same
+    // value so a Worker log line joins to the same relay log line whichever
+    // name it read.
     if let Ok(value) = HeaderValue::from_str(&new_request_id()) {
-        headers.insert(HeaderName::from_static(REQUEST_ID_HEADER), value);
+        for name in REQUEST_ID_HEADERS {
+            headers.insert(HeaderName::from_static(name), value.clone());
+        }
     }
 }
 
@@ -397,25 +525,30 @@ struct ParsedRequest {
 
 impl ParsedRequest {
     fn from_headers(headers: &HeaderMap, body: Bytes) -> Result<Self, Rejection> {
-        let version = single_header(headers, "x-codex-relay-version")?
+        // Resolve the namespace once, then read every field from that generation
+        // only. Reading each field with a per-field fallback would let a caller
+        // assemble one envelope out of both namespaces.
+        let names = detect_generation(headers)?.names();
+
+        let version = single_header(headers, names.version)?
             .parse::<u8>()
             .map_err(|_| reject(StatusCode::BAD_REQUEST, "relay_protocol_error"))?;
-        let key_id = single_header(headers, "x-codex-relay-key-id")?.to_owned();
-        let timestamp = single_header(headers, "x-codex-relay-timestamp")?
+        let key_id = single_header(headers, names.key_id)?.to_owned();
+        let timestamp = single_header(headers, names.timestamp)?
             .parse::<i64>()
             .map_err(|_| reject(StatusCode::BAD_REQUEST, "relay_protocol_error"))?;
-        let nonce = single_header(headers, "x-codex-relay-nonce")?.to_owned();
-        let method = single_header(headers, "x-codex-relay-method")?.to_owned();
-        let target = decode_utf8_header(headers, "x-codex-relay-target")?;
-        let body_sha256 = single_header(headers, "x-codex-relay-body-sha256")?;
+        let nonce = single_header(headers, names.nonce)?.to_owned();
+        let method = single_header(headers, names.method)?.to_owned();
+        let target = decode_utf8_header(headers, names.target)?;
+        let body_sha256 = single_header(headers, names.body_sha256)?;
         if body_sha256 != sha256_base64url(&body) {
             return Err(reject(
                 StatusCode::BAD_REQUEST,
                 "relay_body_digest_mismatch",
             ));
         }
-        let header_block = decode_header_block(headers)?;
-        let signature = single_header(headers, "x-codex-relay-signature")?.to_owned();
+        let header_block = decode_header_block(headers, names.headers)?;
+        let signature = single_header(headers, names.signature)?.to_owned();
 
         Ok(Self {
             version,
@@ -477,8 +610,11 @@ fn decode_utf8_header(headers: &HeaderMap, name: &'static str) -> Result<String,
     String::from_utf8(decoded).map_err(|_| reject(StatusCode::BAD_REQUEST, "relay_protocol_error"))
 }
 
-fn decode_header_block(headers: &HeaderMap) -> Result<Vec<[String; 2]>, Rejection> {
-    let encoded = single_header(headers, "x-codex-relay-headers")?;
+fn decode_header_block(
+    headers: &HeaderMap,
+    block_name: &'static str,
+) -> Result<Vec<[String; 2]>, Rejection> {
+    let encoded = single_header(headers, block_name)?;
     let decoded = base64url_decode(encoded)
         .map_err(|_| reject(StatusCode::BAD_REQUEST, "relay_protocol_error"))?;
     if decoded.len() > MAX_CANONICAL_HEADERS_BYTES {
@@ -501,7 +637,16 @@ fn decode_header_block(headers: &HeaderMap) -> Result<Vec<[String; 2]>, Rejectio
         let (name, value) = line
             .split_once(':')
             .ok_or_else(|| reject(StatusCode::BAD_REQUEST, "relay_protocol_error"))?;
-        if FORBIDDEN_HEADERS.contains(&name) || name.starts_with(CONTROL_PREFIX) {
+        // Both namespaces are refused, not just the one this request speaks. A
+        // signed block naming `x-codex-relay-result` would otherwise reach an
+        // upstream -- or, worse, be replayed onto a response path that an
+        // un-redeployed ingress still reads as attribution. Any name a live
+        // ingress can read is a name the relay must keep out of forwarded
+        // traffic.
+        if FORBIDDEN_HEADERS.contains(&name)
+            || name.starts_with(CONTROL_PREFIX)
+            || name.starts_with(LEGACY_CONTROL_PREFIX)
+        {
             return Err(reject(StatusCode::BAD_REQUEST, "relay_forbidden_header"));
         }
         parsed.push([name.to_owned(), value.to_owned()]);
