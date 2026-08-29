@@ -45,6 +45,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -195,8 +196,28 @@ def payload() -> dict:
 
 
 def run(label: str, argv: list[str], cwd: pathlib.Path, stdin: str) -> dict:
+    # Pin the cargo target dir to an absolute path under the crate.
+    #
+    # An inherited relative CARGO_TARGET_DIR resolves against this cwd, not the
+    # caller's, so a developer running `CARGO_TARGET_DIR=target-cli python3
+    # protocol/conformance.py` from the repo root gets a second target tree at
+    # egress-relay/target-cli while believing they configured the one at the root.
+    # Rebuilding that tree from scratch is minutes of wasted work per run.
+    #
+    # target-cli rather than target so this never contends with an editor's
+    # rust-analyzer holding target/debug/.cargo-lock, which blocks silently.
+    env = None
+    if argv and argv[0] == "cargo":
+        env = {**os.environ, "CARGO_TARGET_DIR": str(cwd / "target-cli")}
+
     result = subprocess.run(
-        argv, cwd=cwd, input=stdin, capture_output=True, text=True, timeout=600
+        argv,
+        cwd=cwd,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env=env,
     )
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
