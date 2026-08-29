@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { sendViaRelay } from "../src/relay/client";
 import {
@@ -250,6 +250,67 @@ describe.each([
     // The machine code names an internal gate; echoing it tells an attacker
     // which check they tripped.
     expect(JSON.stringify(body)).not.toContain(code);
+  });
+
+  it("logs relay attribution metadata without logging the relay body", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const response = await send(
+        new Response("sensitive relay response body", {
+          status: 401,
+          headers: {
+            "cf-ray": "ray123-SIN",
+            ...control({
+              result: "error",
+              error: "relay_auth_error",
+              "request-id": "relay-request-123",
+            }),
+          },
+        }),
+      );
+
+      expect(response.status).toBe(502);
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        JSON.stringify({
+          event: "relay_attribution_failure",
+          relay_status: 401,
+          relay_result: "error",
+          relay_error: "relay_auth_error",
+          relay_request_id: "relay-request-123",
+          cf_ray: "ray123-SIN",
+        }),
+      );
+      expect(log.mock.calls[0]?.[0]).not.toContain("sensitive relay response body");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("logs missing relay attribution headers as null", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const response = await send(
+        new Response("edge error body", {
+          status: 502,
+          headers: { "cf-ray": "edge456-SIN" },
+        }),
+      );
+
+      expect(response.status).toBe(502);
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        JSON.stringify({
+          event: "relay_attribution_failure",
+          relay_status: 502,
+          relay_result: null,
+          relay_error: null,
+          relay_request_id: null,
+          cf_ray: "edge456-SIN",
+        }),
+      );
+      expect(log.mock.calls[0]?.[0]).not.toContain("edge error body");
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("maps relay upstream_timeout to 504 and upstream_error to 502", async () => {

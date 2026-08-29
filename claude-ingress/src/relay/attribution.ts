@@ -16,6 +16,10 @@ import { errorResponse, type RelayErrorType } from "../errors";
  */
 const RESULT_HEADERS = ["x-egress-relay-result", "x-codex-relay-result"] as const;
 const ERROR_HEADERS = ["x-egress-relay-error", "x-codex-relay-error"] as const;
+const REQUEST_ID_HEADERS = [
+  "x-egress-relay-request-id",
+  "x-codex-relay-request-id",
+] as const;
 
 function readControl(
   headers: Headers,
@@ -25,6 +29,16 @@ function readControl(
     const value = headers.get(name);
     if (value !== null) {
       return value.trim().toLowerCase();
+    }
+  }
+  return null;
+}
+
+function readMetadata(headers: Headers, names: readonly string[]): string | null {
+  for (const name of names) {
+    const value = headers.get(name)?.trim();
+    if (value) {
+      return value;
     }
   }
   return null;
@@ -77,8 +91,25 @@ export function attributeRelayResponse(
     });
   }
 
-  const machineCode = readControl(upstream.headers, ERROR_HEADERS) ?? "";
-  const [status, message, type] = RELAY_ERROR_MAP.get(machineCode) ?? RELAY_UNAVAILABLE;
+  const machineCode = readControl(upstream.headers, ERROR_HEADERS);
+
+  // The client must not learn which internal gate rejected the request, but the
+  // operator must be able to distinguish that gate from a headerless Cloudflare
+  // or tunnel response. Keep the event deliberately metadata-only: no target,
+  // request headers, response headers, or body can carry credentials or prompts
+  // into Worker logs.
+  console.error(
+    JSON.stringify({
+      event: "relay_attribution_failure",
+      relay_status: upstream.status,
+      relay_result: result,
+      relay_error: machineCode,
+      relay_request_id: readMetadata(upstream.headers, REQUEST_ID_HEADERS),
+      cf_ray: readMetadata(upstream.headers, ["cf-ray"]),
+    }),
+  );
+
+  const [status, message, type] = RELAY_ERROR_MAP.get(machineCode ?? "") ?? RELAY_UNAVAILABLE;
 
   // Built from scratch, never from the relay's body: the relay's own JSON names
   // the internal gate that rejected the request.
