@@ -173,11 +173,13 @@ describe("Claude Code cloak", () => {
     }
   });
 
-  it("forwards the prompt untouched and stamps only the identity", async () => {
-    // The prompt is the caller's. Nothing is prepended to `system`, no date
-    // reminder is appended and no cache breakpoint is planted: an inserted block
-    // shifts the prompt prefix and costs the caller its own cache hits, and
-    // injected text changes what the model answers.
+  it("keeps the caller's prompt and adds only the attribution block", async () => {
+    // The caller's own prompt text survives verbatim. What is added is the
+    // billing attribution block, without which a Claude-Code-only upstream
+    // refuses the request before any model is reached. It is metadata, not
+    // instruction: no identity sentence, no date reminder and no cache
+    // breakpoint, because those change what the model answers and buy no
+    // admission the block does not already buy.
     const body =
       '{"model":"claude-sonnet-4-6","max_tokens":1024,"system":"be terse","messages":[{"role":"user","content":"hi"}]}';
     const spy = captureRelay();
@@ -188,9 +190,15 @@ describe("Claude Code cloak", () => {
       expect(relayed.model).toBe("claude-sonnet-4-6");
       expect(relayed.max_tokens).toBe(1024);
       expect(relayed.messages).toEqual([{ role: "user", content: "hi" }]);
-      // Still the caller's bare string: not promoted to a block array, not
-      // reordered, nothing added.
-      expect(relayed.system).toBe("be terse");
+      // A bare string is promoted to the block-array form the upstream check
+      // reads, with the caller's own text kept intact behind the block.
+      expect(relayed.system).toEqual([
+        {
+          type: "text",
+          text: "x-anthropic-billing-header: cc_version=2.1.239.5e2; cc_entrypoint=cli;",
+        },
+        { type: "text", text: "be terse" },
+      ]);
       expect(relayed.context_management).toBeUndefined();
       // `user_id` is a JSON string, not a nested object: an object here would be
       // immediately distinguishable from a real request.
@@ -208,8 +216,10 @@ describe("Claude Code cloak", () => {
 
   it("is idempotent across a second hop", async () => {
     // A request can traverse more than one hop of this Worker, so each pass must
-    // converge on the same bytes. It does because the only field written is
-    // `metadata.user_id`, and that is derived from the credential rather than
+    // converge on the same bytes. Both written fields are reproduced rather than
+    // accumulated: `metadata.user_id` is derived from the credential, and the
+    // attribution block is stripped before being rewritten from the *first* user
+    // message, so a second pass recomputes the value it already held, rather than
     // accumulated.
     const first = captureRelay();
     let relayed: string;

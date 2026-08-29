@@ -6,7 +6,7 @@
  *
  *   1. classify the endpoint      -- decides which beta profile applies
  *   2. derive identity            -- needed by the body's metadata block
- *   3. read the body              -- reports what the request actually asks for
+ *   3. transform the body         -- identity + attribution; reports capabilities
  *   4. build the beta header      -- from the body, never from the caller's guess
  *   5. rebuild the headers        -- delete-then-write over the survivors
  *
@@ -15,15 +15,17 @@
  * from the body it is about to send means a beta is announced only when the field
  * it describes is present.
  *
- * Scope, stated plainly. This shapes the request *envelope* -- headers and client
- * identity. Prompt content is the caller's and is forwarded unchanged: see
- * `body.ts` for why synthesizing a system prompt would cost the caller cache
- * hits and tokens while fooling nobody. Below the envelope, the relay reaches
- * upstream with rustls over HTTP/2, so the TLS ClientHello, the HTTP/2 settings
- * and the resulting JA4 are the relay's, not a real client's. No amount of header
- * work changes that, and this module does not pretend otherwise. Billing
- * attribution (CCH and its signed headers) is likewise out of scope by decision,
- * so requests are shaped like Claude Code without claiming its billing identity.
+ * Scope, stated plainly. This shapes the request *envelope* -- headers, client
+ * identity and the billing attribution block that admits the request at all.
+ * Prompt content beyond that block is the caller's and is forwarded unchanged:
+ * see `body.ts` for why synthesizing an identity sentence would change the
+ * model's answers to buy admission the block already buys. Below the envelope,
+ * the relay reaches upstream with rustls over HTTP/2, so the TLS ClientHello, the
+ * HTTP/2 settings and the resulting JA4 are the relay's, not a real client's. No
+ * amount of header or body work changes that, and this module does not pretend
+ * otherwise. `cch=` and its signed headers stay out: current clients no longer
+ * send them, so reproducing them would diverge from real traffic rather than
+ * match it.
  */
 import type { ProjectedRequest } from "../pipeline";
 import { buildBetaHeader } from "./beta";
@@ -53,10 +55,11 @@ export async function projectClaudeRequest(
   const endpoint = classifyEndpoint(new URL(request.url).pathname);
   const identity = await deriveIdentity(request.headers.get("x-api-key"), profile);
 
-  const projected = transformBody(body, {
+  const projected = await transformBody(body, {
     endpoint,
     identity,
     contentType: request.headers.get("content-type"),
+    profile,
   });
 
   const betaHeader = buildBetaHeader(

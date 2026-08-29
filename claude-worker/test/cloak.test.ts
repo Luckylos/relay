@@ -21,6 +21,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyAttribution,
+  buildAttributionText,
+  computeFingerprint,
+  extractFirstUserText,
+  isAttributionText,
+} from "../src/cloak/attribution";
+import {
   buildBetaHeader,
   type ClaudeEndpoint,
   parseBetaHeader,
@@ -59,11 +66,26 @@ function shape(
   return transformBody(encode(body), {
     endpoint,
     identity: IDENTITY,
+    profile: DEFAULT_CLOAK_PROFILE,
     contentType: "application/json",
   });
 }
 
 const MESSAGES = [{ role: "user", content: "hi" }];
+
+/**
+ * The attribution block for `MESSAGES` under the pinned profile.
+ *
+ * "hi" is shorter than every sampled offset, so all three fall back to '0' and
+ * the fingerprint is the same one an empty opener produces.
+ */
+const MESSAGES_ATTRIBUTION =
+  "x-anthropic-billing-header: cc_version=2.1.239.5e2; cc_entrypoint=cli;";
+
+/** The block, as it appears once written into `system`. */
+function attributionBlock(text: string = MESSAGES_ATTRIBUTION) {
+  return { type: "text", text };
+}
 
 describe("profile", () => {
   it("pins the forensically captured 2.1.239 values", () => {
@@ -349,114 +371,345 @@ describe("metadata.user_id", () => {
   });
 });
 
-describe("body handling", () => {
-  it("forwards a caller's system prompt unchanged", () => {
-    // The prompt is the caller's. Prepending an identity line would shift the
-    // entire cached prefix and change what the model answers.
-    const body = decode(
-      shape({ model: "claude-sonnet-4-6", system: "be terse", messages: MESSAGES }).body,
+describe("attribution", () => {
+  /**
+   * Goldens, not round-trips. Each value below was computed independently from
+   * the algorithm's definition, so a refactor that changes the fingerprint
+   * fails here instead of quietly presenting a build that never shipped.
+   */
+  it("reproduces the published fingerprint vector", async () => {
+    expect(await computeFingerprint("x", "2.1.220")).toBe("04c");
+  });
+
+  it("substitutes '0' for every offset past the end of the message", async () => {
+    // "hi" is shorter than the first sampled offset, so it fingerprints as an
+    // empty opener does.
+    expect(await computeFingerprint("", "2.1.239")).toBe("5e2");
+    expect(await computeFingerprint("hi", "2.1.239")).toBe("5e2");
+    // Long enough for the first offset only.
+    expect(await computeFingerprint("short", "2.1.239")).toBe("c63");
+  });
+
+  it("samples a realistic prompt", async () => {
+    expect(
+      await computeFingerprint(
+        "Refactor the auth middleware so the token check happens before rate limiting.",
+        "2.1.239",
+      ),
+    ).toBe("1c8");
+  });
+
+  it("indexes UTF-16 code units, as the real client does", async () => {
+    // The client is JavaScript, where `text[i]` is a UTF-16 code unit. Both
+    // reference implementations of this algorithm are Go and index by rune or by
+    // byte instead; all three agree on ASCII and diverge here.
+    //
+    // This opener is deliberately the awkward case: offset 4 lands *inside* a
+    // surrogate pair, so the sampled character is a lone high surrogate. Encoding
+    // that to UTF-8 substitutes U+FFFD, which is what the digest actually sees --
+    // so the answer is not reachable by sampling code points (cb6) and not
+    // reachable by preserving the raw surrogate bytes either (4fd, which only a
+    // surrogate-passing encoder would produce).
+    expect(
+      await computeFingerprint(
+        "\u{1f389}\u{1f389}\u{1f389} ship it now, please review the diff",
+        "2.1.239",
+      ),
+    ).toBe("b2c");
+    // A BMP non-ASCII opener, where byte-indexing is the one that diverges.
+    expect(await computeFingerprint("请帮我分析这个仓库的构建系统", "2.1.239")).toBe("a9c");
+  });
+
+  it("changes with the CLI version", async () => {
+    expect(await computeFingerprint("x", "2.1.239")).not.toBe(
+      await computeFingerprint("x", "2.1.220"),
     );
-    expect(body.system).toBe("be terse");
   });
 
-  it("adds no system prompt when the caller sent none", () => {
-    // A bare API caller stays a bare API caller. One fixed sentence does not
-    // approximate Claude Code's situated prompt, so it only costs tokens.
-    const body = decode(shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body);
-    expect(body.system).toBeUndefined();
+  it("emits the block without cch", async () => {
+    // Current clients stopped sending it, so reproducing it would diverge from
+    // real traffic rather than match it.
+    const text = await buildAttributionText(MESSAGES, "2.1.239", "cli");
+
+    expect(text).toBe(MESSAGES_ATTRIBUTION);
+    expect(text).not.toContain("cch=");
   });
 
-  it("leaves system blocks and their cache breakpoints alone", () => {
-    // A breakpoint planted here would compete with the caller's own cache
-    // strategy, and a block inserted ahead of one would invalidate the prefix it
-    // was placed to protect.
+  it("reads the first user message and stops there", () => {
+    expect(
+      extractFirstUserText([
+        { role: "assistant", content: "ignored" },
+        { role: "user", content: "first" },
+        { role: "user", content: "second" },
+      ]),
+    ).toBe("first");
+  });
+
+  it("reads the leading text block of a structured message", () => {
+    expect(
+      extractFirstUserText([
+        {
+          role: "user",
+          content: [
+            { type: "image", source: {} },
+            { type: "text", text: "after the image" },
+          ],
+        },
+      ]),
+    ).toBe("after the image");
+  });
+
+  it("yields the empty string for an opener with no text", () => {
+    // Falling through to a later message would make the fingerprint move
+    // between turns, which is the property this reading exists to protect.
+    expect(
+      extractFirstUserText([
+        { role: "user", content: [{ type: "image", source: {} }] },
+        { role: "user", content: "later text" },
+      ]),
+    ).toBe("");
+    expect(extractFirstUserText(undefined)).toBe("");
+    expect(extractFirstUserText([])).toBe("");
+  });
+
+  it("recognises a block already in place, including a padded one", () => {
+    expect(isAttributionText(MESSAGES_ATTRIBUTION)).toBe(true);
+    expect(isAttributionText("  \n\t" + MESSAGES_ATTRIBUTION)).toBe(true);
+    expect(isAttributionText("You are Claude Code")).toBe(false);
+    expect(isAttributionText(undefined)).toBe(false);
+  });
+
+  it("leads the survivors and drops a caller's own block", () => {
+    const applied = applyAttribution(
+      [
+        { type: "text", text: "x-anthropic-billing-header: cc_version=1.0.0.zzz; cc_entrypoint=cli;" },
+        { type: "text", text: "keep me" },
+      ],
+      MESSAGES_ATTRIBUTION,
+    );
+
+    expect(applied).toEqual([attributionBlock(), { type: "text", text: "keep me" }]);
+  });
+
+  it("drops a blank string system rather than promoting an empty block", () => {
+    expect(applyAttribution("   ", MESSAGES_ATTRIBUTION)).toEqual([attributionBlock()]);
+  });
+
+  it("is idempotent", () => {
+    const once = applyAttribution([{ type: "text", text: "keep me" }], MESSAGES_ATTRIBUTION);
+    const twice = applyAttribution(once, MESSAGES_ATTRIBUTION);
+
+    expect(twice).toEqual(once);
+  });
+});
+
+describe("body handling", () => {
+  it("leads the caller's system array with the attribution block", async () => {
+    // The block is what admits the request: without it the upstream refuses
+    // before a model is reached, observed as 503 on an otherwise correct
+    // request.
+    const system = [{ type: "text", text: "be terse" }];
+    const body = decode(
+      (await shape({ model: "claude-sonnet-4-6", system, messages: MESSAGES })).body,
+    );
+
+    expect(body.system).toEqual([attributionBlock(), ...system]);
+  });
+
+  it("promotes a string system prompt so the block can lead it", async () => {
+    // Equivalent to the API, and the upstream check only reads the array form.
+    const body = decode(
+      (
+        await shape({
+          model: "claude-sonnet-4-6",
+          system: "be terse",
+          messages: MESSAGES,
+        })
+      ).body,
+    );
+
+    expect(body.system).toEqual([attributionBlock(), { type: "text", text: "be terse" }]);
+  });
+
+  it("writes the block even when the caller sent no system prompt", async () => {
+    // Admission is all-or-nothing upstream, so there is no request this Worker
+    // can usefully send without it.
+    const body = decode(
+      (await shape({ model: "claude-sonnet-4-6", messages: MESSAGES })).body,
+    );
+
+    expect(body.system).toEqual([attributionBlock()]);
+  });
+
+  it("adds no identity sentence", async () => {
+    // An instruction would change what the model answers. A probe carrying the
+    // block *without* the sentence was admitted and answered normally, so the
+    // sentence buys no admission that would justify the cost.
+    const body = decode(
+      (await shape({ model: "claude-sonnet-4-6", messages: MESSAGES })).body,
+    );
+
+    expect(JSON.stringify(body.system)).not.toContain("You are Claude Code");
+  });
+
+  it("keeps the caller's own blocks and their cache breakpoints in order", async () => {
     const system = [
       { type: "text", text: "first" },
       { type: "text", text: "second", cache_control: { type: "ephemeral" } },
     ];
     const body = decode(
-      shape({ model: "claude-sonnet-4-6", system, messages: MESSAGES }).body,
+      (await shape({ model: "claude-sonnet-4-6", system, messages: MESSAGES })).body,
     );
-    expect(body.system).toEqual(system);
+
+    expect(body.system).toEqual([attributionBlock(), ...system]);
   });
 
-  it("leaves tools untouched", () => {
+  it("carries no cache_control of its own", async () => {
+    // The real client's attribution block is bare; the breakpoint belongs to
+    // whatever follows it.
+    const body = decode(
+      (await shape({ model: "claude-sonnet-4-6", messages: MESSAGES })).body,
+    );
+    const blocks = body.system as Record<string, unknown>[];
+
+    expect(blocks[0]?.cache_control).toBeUndefined();
+  });
+
+  it("replaces a caller's own attribution block rather than stacking one", async () => {
+    // Keeping both would present two builds behind one credential, and it is
+    // what makes a second hop converge.
+    const system = [
+      {
+        type: "text",
+        text: "x-anthropic-billing-header: cc_version=1.0.0.zzz; cc_entrypoint=cli;",
+      },
+      { type: "text", text: "be terse" },
+    ];
+    const body = decode(
+      (await shape({ model: "claude-sonnet-4-6", system, messages: MESSAGES })).body,
+    );
+
+    expect(body.system).toEqual([attributionBlock(), { type: "text", text: "be terse" }]);
+  });
+
+  it("fingerprints the first user message, not the latest", async () => {
+    // This is what keeps the block -- and therefore the cached prefix -- stable
+    // across the turns of one conversation.
+    const opener = {
+      role: "user",
+      content:
+        "Refactor the auth middleware so the token check happens before rate limiting.",
+    };
+    const first = decode((await shape({ model: "claude-sonnet-4-6", messages: [opener] })).body);
+    const later = decode(
+      (
+        await shape({
+          model: "claude-sonnet-4-6",
+          messages: [
+            opener,
+            { role: "assistant", content: "ok" },
+            { role: "user", content: "now do the same for the logging layer" },
+          ],
+        })
+      ).body,
+    );
+
+    const lead = (payload: Record<string, unknown>) =>
+      (payload.system as Record<string, unknown>[])[0]?.text;
+
+    expect(lead(first)).toBe(
+      "x-anthropic-billing-header: cc_version=2.1.239.1c8; cc_entrypoint=cli;",
+    );
+    expect(lead(later)).toBe(lead(first));
+  });
+
+  it("leaves tools untouched", async () => {
     const tools = [{ name: "read", description: "x", input_schema: { type: "object" } }];
     const body = decode(
-      shape({ model: "claude-sonnet-4-6", tools, messages: MESSAGES }).body,
+      (await shape({ model: "claude-sonnet-4-6", tools, messages: MESSAGES })).body,
     );
+
     expect(body.tools).toEqual(tools);
   });
 
-  it("never adds context_management", () => {
+  it("never adds context_management", async () => {
     // `clear_thinking_20251015` tells the API to drop thinking blocks. On a
     // caller that owns its thinking history that is silent data loss it never
     // asked for.
     const body = decode(
-      shape({
-        model: "claude-sonnet-4-6",
-        thinking: { type: "enabled", budget_tokens: 1024 },
-        messages: MESSAGES,
-      }).body,
+      (
+        await shape({
+          model: "claude-sonnet-4-6",
+          thinking: { type: "enabled", budget_tokens: 1024 },
+          messages: MESSAGES,
+        })
+      ).body,
     );
+
     expect(body.context_management).toBeUndefined();
   });
 
-  it("forwards a caller's own context_management", () => {
+  it("forwards a caller's own context_management", async () => {
     const managed = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
     const body = decode(
-      shape({
-        model: "claude-sonnet-4-6",
-        thinking: { type: "enabled" },
-        context_management: managed,
-        messages: MESSAGES,
-      }).body,
+      (
+        await shape({
+          model: "claude-sonnet-4-6",
+          thinking: { type: "enabled" },
+          context_management: managed,
+          messages: MESSAGES,
+        })
+      ).body,
     );
+
     expect(body.context_management).toEqual(managed);
   });
 
-  it("preserves the caller's own fields verbatim", () => {
-    // Everything except `metadata` must survive byte-for-byte in value.
+  it("preserves every field it does not own", async () => {
+    // `metadata` and `system` are the two this cloak writes; everything else
+    // must survive with its value intact.
     const original = {
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
       temperature: 0.3,
       stream: true,
-      system: [{ type: "text", text: "be terse" }],
       messages: MESSAGES,
     };
-    const body = decode(shape(original).body);
-    const { metadata, ...rest } = body;
+    const body = decode((await shape(original)).body);
+    const { metadata, system, ...rest } = body;
 
     expect(metadata).toBeDefined();
+    expect(system).toEqual([attributionBlock()]);
     expect(rest).toEqual(original);
   });
 
-  it("stamps the client identity into metadata", () => {
+  it("stamps the client identity into metadata", async () => {
     const metadata = decode(
-      shape({ model: "claude-sonnet-4-6", messages: MESSAGES }).body,
+      (await shape({ model: "claude-sonnet-4-6", messages: MESSAGES })).body,
     ).metadata as Record<string, unknown>;
 
     expect(JSON.parse(String(metadata.user_id)).device_id).toBe(IDENTITY.deviceId);
   });
 
-  it("keeps a caller's other metadata keys", () => {
-    // `user_id` is the only field this cloak owns.
+  it("keeps a caller's other metadata keys", async () => {
+    // `user_id` is the only metadata field this cloak owns.
     const metadata = decode(
-      shape({
-        model: "claude-sonnet-4-6",
-        metadata: { trace: "abc" },
-        messages: MESSAGES,
-      }).body,
+      (
+        await shape({
+          model: "claude-sonnet-4-6",
+          metadata: { trace: "abc" },
+          messages: MESSAGES,
+        })
+      ).body,
     ).metadata as Record<string, unknown>;
 
     expect(metadata.trace).toBe("abc");
   });
 
-  it("reports capabilities from the caller's body", () => {
-    // The beta header is derived from this, so it must describe the request that
-    // is actually sent -- no more and no less than the caller asked for.
-    const result = shape({
+  it("reports capabilities from the caller's body", async () => {
+    // The beta header is derived from this, so it must describe the request
+    // that is actually sent -- no more and no less than the caller asked for.
+    const result = await shape({
       model: "claude-sonnet-4-6",
       thinking: { type: "enabled" },
       tools: [{ name: "read" }],
@@ -465,16 +718,17 @@ describe("body handling", () => {
 
     expect(result.capabilities.hasThinking).toBe(true);
     expect(result.capabilities.hasTools).toBe(true);
-    // False because nothing synthesizes it any more; announcing the beta without
-    // the field would be both a fingerprint and an upstream 400.
+    // False because nothing synthesizes it any more; announcing the beta
+    // without the field would be both a fingerprint and an upstream 400.
     expect(result.capabilities.hasContextManagement).toBe(false);
   });
 
-  it("leaves a non-JSON body untouched", () => {
+  it("leaves a non-JSON body untouched", async () => {
     const raw = new TextEncoder().encode("not json at all");
-    const result = transformBody(raw, {
+    const result = await transformBody(raw, {
       endpoint: "messages",
       identity: IDENTITY,
+      profile: DEFAULT_CLOAK_PROFILE,
       contentType: "application/octet-stream",
     });
 
@@ -483,37 +737,56 @@ describe("body handling", () => {
     expect(result.capabilities.hasTools).toBe(false);
   });
 
-  it("leaves unparseable JSON untouched", () => {
+  it("leaves unparseable JSON untouched", async () => {
     const raw = new TextEncoder().encode("{broken");
-    const result = transformBody(raw, {
+    const result = await transformBody(raw, {
       endpoint: "messages",
       identity: IDENTITY,
+      profile: DEFAULT_CLOAK_PROFILE,
       contentType: "application/json",
     });
+
     expect(result.body).toBe(raw);
   });
 
-  it("leaves an unrecognised endpoint untouched", () => {
-    // An unfamiliar shape may not carry a `metadata` object at all; writing one
-    // would be inventing a schema.
+  it("leaves an unrecognised endpoint untouched", async () => {
+    // An unfamiliar shape may carry neither `system` nor `metadata`; writing
+    // either would be inventing a schema.
     const raw = encode({ model: "claude-sonnet-4-6" });
-    expect(shape({ model: "claude-sonnet-4-6" }, "other").body).toEqual(raw);
+
+    expect((await shape({ model: "claude-sonnet-4-6" }, "other")).body).toEqual(raw);
   });
 
-  it("is idempotent", () => {
-    const once = shape({
-      model: "claude-sonnet-4-6",
-      system: "be terse",
-      thinking: { type: "enabled" },
-      tools: [{ name: "read" }],
-      messages: MESSAGES,
-    }).body;
+  it("gives count_tokens the block as well", async () => {
+    // The upstream check waves that endpoint through on user-agent alone, but
+    // the count has to describe the `/v1/messages` request that follows, and
+    // that request will carry the block.
+    const body = decode(
+      (await shape({ model: "claude-sonnet-4-6", messages: MESSAGES }, "count_tokens")).body,
+    );
 
-    const twice = transformBody(once, {
-      endpoint: "messages",
-      identity: IDENTITY,
-      contentType: "application/json",
-    }).body;
+    expect(body.system).toEqual([attributionBlock()]);
+  });
+
+  it("is idempotent", async () => {
+    const once = (
+      await shape({
+        model: "claude-sonnet-4-6",
+        system: "be terse",
+        thinking: { type: "enabled" },
+        tools: [{ name: "read" }],
+        messages: MESSAGES,
+      })
+    ).body;
+
+    const twice = (
+      await transformBody(once, {
+        endpoint: "messages",
+        identity: IDENTITY,
+        profile: DEFAULT_CLOAK_PROFILE,
+        contentType: "application/json",
+      })
+    ).body;
 
     expect(new TextDecoder().decode(twice)).toBe(new TextDecoder().decode(once));
   });

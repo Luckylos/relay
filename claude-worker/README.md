@@ -27,7 +27,7 @@ Both Workers project the caller's identity; what they project differs:
 | | `codex-worker/` | `claude-worker/` (this package) |
 | --- | --- | --- |
 | Caller identity | **Synthesized Codex identity** in headers and `client_metadata`. | **Claude Code profile**, rebuilt from a pinned version. |
-| Body | May receive injected `client_metadata` | Forwarded as-is except `metadata.user_id` |
+| Body | May receive injected `client_metadata` | Forwarded as-is except `metadata.user_id` and the billing attribution block |
 | Body ceiling variable | `CODEX_PROXY_MAX_BODY_BYTES` | `CLAUDE_PROXY_MAX_BODY_BYTES` |
 
 Everything else — target parsing, the signed relay envelope, header hygiene,
@@ -55,44 +55,79 @@ What the cloak rebuilds (`src/cloak/`):
 | --- | --- |
 | Identity headers | `user-agent`, `x-app`, the `X-Stainless-*` family and `anthropic-version` are deleted then rewritten from the profile. The caller's real `x-claude-code-*` / `x-claude-remote-*` session values are dropped. |
 | `anthropic-beta` | Derived from the *transformed body*, so a beta is never announced without the field it describes. Unrecognised caller values are preserved at the tail. `count_tokens` gets its own profile. |
-| Prompt content | **Not touched.** `system`, `tools`, `messages` and `thinking` are forwarded exactly as received. |
+| Prompt content | `tools`, `messages` and `thinking` are forwarded exactly as received. `system` receives one prepended block: the billing attribution line, which is what admits the request at all. No identity sentence, no date reminder, no planted breakpoints. |
+| Billing attribution | `x-anthropic-billing-header: cc_version=<cli>.<fp>; cc_entrypoint=cli;` at the head of `system`, with `<fp>` computed from the first user message. Any block the caller already sent is replaced. |
 | `metadata.user_id` | A JSON *string* carrying `device_id` (64 hex), `account_uuid` (`""` for API-key auth, which is what a real client sends) and `session_id`, derived deterministically from the caller's key so one key is one stable device. |
 
 Never touched: `x-api-key` and `authorization`. Upstream authorization stays the
 caller's own, and this Worker holds no credential to substitute.
 
-### Why the prompt is left alone
+### The billing attribution block
 
-An earlier revision synthesized content: it prepended the Claude Code identity
-line, appended a `# currentDate` reminder, inserted a `clear_thinking_20251015`
-edit and planted cache breakpoints. That was wrong on three counts.
+Real Claude Code opens its `system` array with one metadata line:
 
-- A block unshifted onto the head of `system` shifts the whole prompt prefix, so
-  the caller's own prompt cache misses — and a reminder carrying today's date
-  re-misses every midnight. The breakpoints added alongside could not repair
-  damage they were causing.
-- `clear_thinking_20251015` tells the API to drop thinking blocks: silent data
-  loss on a multi-turn request that owns its thinking history.
-- An identity line and a date reminder change what the model answers. A relay
-  that alters responses is not transparent, whatever its headers say.
+```text
+x-anthropic-billing-header: cc_version=2.1.239.1c8; cc_entrypoint=cli;
+```
 
-There is also no disguise to be had. Real Claude Code sends a large situated
-system prompt — tool inventory, working directory, git state — that differs on
-every request. One fixed sentence approximates none of it; it produces a request
-resembling neither a real client nor an honest API caller, and bills the caller
-tokens for the confusion. The envelope is where this cloak can be accurate, so
-that is where it stops.
+The three characters after the version are a build fingerprint the client
+computes from its own request: `SHA-256(salt + sampled characters + version)`,
+first three hex digits, sampling offsets 4, 7 and 20 of the **first** user
+message with `'0'` substituted past the end.
 
-The transform is idempotent — `transform(transform(x)) === transform(x)` — so a
-request crossing more than one hop converges. It holds by construction now that
-nothing is inserted: `metadata.user_id` is derived from the caller's key, so a
-second pass rewrites it to the value it already held.
+Upstreams that admit only Claude Code clients look for exactly this block. This
+is not inferred from documentation — it was measured against a live gate. Three
+probes, each a realistic request with a real tool schema and `max_tokens: 1024`,
+run one at a time:
+
+| Probe | `system` | Result |
+| --- | --- | --- |
+| Headers and `metadata.user_id` correct, no block | no Claude Code marker | `503 this group only allows Claude Code clients`, 1.2 s |
+| Block **and** identity sentence | both | `200`, normal `tool_use` reply |
+| Block only | attribution line, no identity sentence | `200`, normal `tool_use` reply |
+
+The first probe is what this Worker used to send. So the block is load-bearing,
+and the identity sentence is not.
+
+That distinction is the whole design. The sentence *"You are Claude Code,
+Anthropic's official CLI for Claude."* is an instruction — it changes what the
+model answers, and a relay that alters answers is not transparent whatever its
+headers say. The attribution line carries no directive a model can follow, and
+it is computed from the request rather than invented. The third probe shows the
+sentence buys no admission the block does not already buy, so it stays out, and
+so do the `# currentDate` reminder and the `clear_thinking_20251015` edit an
+earlier revision also inserted. That last one instructs the API to drop thinking
+blocks: silent data loss on a caller that owns its thinking history.
+
+**Why the head of `system` does not cost the caller its cache.** A block
+unshifted onto a prompt prefix normally invalidates it on every request. This
+one does not, because it does not vary per request: the fingerprint reads the
+*first* user message, so every turn of one conversation produces the same block
+and the prefix is stable exactly where a real client's is. Reading the *last*
+user message instead would recompute it each turn and invalidate the prefix each
+time — one of the two reference implementations of this algorithm does exactly
+that, and it is the reason this one follows the first-message reading.
+
+Two smaller decisions, both matching current client traffic rather than older
+captures: `cch=` is not sent, because current clients stopped sending it, and
+the block carries no `cache_control` of its own.
+
+**Applied unconditionally**, with no variable to turn it off. The upstream check
+is all-or-nothing — a request without the block is refused before a model is
+reached — so an off switch would only describe a request this Worker cannot
+usefully send. Both reference implementations gate this mimicry behind a
+per-credential flag because they front arbitrary providers, some of which read
+the block as prose; this Worker's callers point at a Claude upstream by
+construction.
+
+The transform stays idempotent — `transform(transform(x)) === transform(x)` — so
+a request crossing more than one hop converges. `metadata.user_id` is derived
+from the caller's key, and the attribution block is stripped before it is
+rewritten, so a second pass reproduces both values rather than stacking them.
 
 Scope: application layer only. The relay reaches upstream with rustls over
 HTTP/2, so the TLS ClientHello, HTTP/2 settings and resulting JA4 are the
-relay's, not a real client's — no amount of header work changes that. Billing
-attribution (CCH and its signed headers) is excluded by decision, so requests
-are shaped like Claude Code without claiming its billing identity.
+relay's, not a real client's — no amount of header or body work changes that.
 
 Overrides, for a version bump without a code change:
 
@@ -104,6 +139,10 @@ CLAUDE_CLOAK_OS               X-Stainless-OS
 CLAUDE_CLOAK_ARCH             X-Stainless-Arch
 CLAUDE_CLOAK_IDENTITY_SALT    domain separator for derived identity
 ```
+
+`CLAUDE_CLOAK_CLI_VERSION` also sets the `cc_version` the attribution block
+reports, so a bump moves the user-agent and the block together — they cannot
+drift into describing two different builds.
 
 These are operator variables, deliberately not caller-controlled: letting a
 request choose its own version fields would let any caller invent an

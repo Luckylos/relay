@@ -1,38 +1,46 @@
 /**
  * Request-body handling.
  *
- * The body belongs to the caller and this module leaves it that way. `system`,
- * `tools`, `messages`, `thinking` and everything else are forwarded exactly as
- * received. The single exception is `metadata.user_id`, which carries the client
- * identity this cloak exists to present and contributes nothing to the prompt.
+ * The body belongs to the caller and stays that way, with two exceptions:
+ * `metadata.user_id`, which carries the client identity this cloak presents, and
+ * the billing attribution block at the head of `system`, which is what admits
+ * the request to a Claude-Code-only upstream at all. `tools`, `messages`,
+ * `thinking` and every other field are forwarded exactly as received.
  *
- * Content is deliberately not synthesized. An earlier revision prepended the
- * Claude Code identity line, appended a `# currentDate` reminder, inserted a
- * `context_management` edit and planted cache breakpoints. Each was a mistake:
+ * Where the line is drawn, and why there. An earlier revision also prepended the
+ * Claude Code identity sentence, appended a `# currentDate` reminder and inserted
+ * a `context_management` edit. Those stay out:
  *
- *   - A block unshifted onto the head of `system` shifts the entire prompt
- *     prefix, so the caller's own prompt cache misses -- and a reminder carrying
- *     today's date re-misses every midnight. The breakpoints added alongside it
- *     could not repair damage they were causing.
+ *   - The identity sentence and the date reminder are instructions. They change
+ *     what the model answers, and a relay that alters answers is not transparent
+ *     whatever its headers say. A probe carrying the attribution block *without*
+ *     the sentence was admitted and answered normally, so the sentence buys no
+ *     admission that would justify the cost.
  *   - `clear_thinking_20251015` instructs the API to drop thinking blocks. On a
  *     multi-turn request that owns its thinking history that is silent data loss
  *     the caller never asked for.
- *   - An identity line and a date reminder change what the model answers. A
- *     relay that alters responses is not transparent, whatever its headers say.
  *
- * There is also no disguise to be had here. Real Claude Code sends a large
- * situated system prompt -- tool inventory, working directory, git state -- that
- * differs on every request. One fixed sentence does not approximate it; it
- * produces a request resembling neither a real client nor an honest API caller,
- * and bills the caller tokens for the confusion. The header and identity
- * envelope is where this cloak can be accurate, so that is where it stops.
+ * The attribution block is a different kind of content: metadata rather than
+ * instruction, carrying no directive a model can follow, and computed from the
+ * request rather than invented. See attribution.ts for the fingerprint, and for
+ * why placing it at the head does not cost the caller its cached prefix.
  *
- * One rule survives: the beta header must describe the body. Capabilities are
- * read from the request as it will be sent, so a beta is never announced without
- * the field it names.
+ * It is applied unconditionally, with no caller-detection branch and no variable
+ * to turn it off. The upstream check is all-or-nothing -- a request without the
+ * block is refused before a model is reached -- so an off switch would only
+ * describe a request this Worker cannot usefully send. Both reference
+ * implementations of this mimicry gate it behind a per-credential flag because
+ * they front arbitrary providers, some of which read the block as prose; this
+ * Worker's callers point at a Claude upstream by construction.
+ *
+ * One rule survives unchanged: the beta header must describe the body.
+ * Capabilities are read from the request as it will be sent, so a beta is never
+ * announced without the field it names.
  */
+import { applyAttribution, buildAttributionText } from "./attribution";
 import type { ClaudeEndpoint, RequestCapabilities } from "./beta";
 import { buildUserId, type ClientIdentity } from "./identity";
+import type { CloakProfile } from "./profile";
 
 type JsonObject = Record<string, unknown>;
 
@@ -89,23 +97,27 @@ export interface BodyTransformOptions {
   readonly endpoint: ClaudeEndpoint;
   readonly identity: ClientIdentity;
   readonly contentType: string | null;
+  /** Supplies the CLI version and entrypoint the attribution block reports. */
+  readonly profile: CloakProfile;
 }
 
 /**
- * Stamp the client identity and report what the body asks for.
+ * Stamp the client identity and the attribution block, and report what the body
+ * asks for.
  *
  * Anything that is not a JSON object is returned byte-for-byte: re-encoding a
  * body this module cannot parse risks corrupting a request that would otherwise
- * have worked, and there is no metadata field to write into.
+ * have worked, and there is no field to write into.
  *
- * Idempotent by construction -- `buildUserId` returns the same value for the
- * same identity, so a second hop rewrites `metadata.user_id` to what it already
- * held and no other field is touched.
+ * Idempotent by construction. `buildUserId` returns the same value for the same
+ * identity, and the attribution block is stripped before it is rewritten from a
+ * fingerprint over the *first* user message, so a second hop reproduces both
+ * values rather than stacking them.
  */
-export function transformBody(
+export async function transformBody(
   raw: Uint8Array,
   options: BodyTransformOptions,
-): BodyTransformResult {
+): Promise<BodyTransformResult> {
   if (!options.contentType?.toLowerCase().includes("application/json")) {
     return { body: raw, capabilities: inertCapabilities("") };
   }
@@ -124,8 +136,8 @@ export function transformBody(
   const body = parsed;
   const model = typeof body.model === "string" ? body.model : "";
 
-  // Only the two endpoints known to carry a `metadata` object. Writing the field
-  // onto an unrecognised shape would be inventing a schema.
+  // Only the two endpoints known to carry `system` and `metadata`. Writing
+  // either onto an unrecognised shape would be inventing a schema.
   if (options.endpoint === "other") {
     return { body: raw, capabilities: inertCapabilities(model) };
   }
@@ -134,6 +146,19 @@ export function transformBody(
   const metadata = isObject(body.metadata) ? body.metadata : {};
   metadata.user_id = buildUserId(options.identity, metadata.user_id);
   body.metadata = metadata;
+
+  // count_tokens gets the block too, even though the upstream check waves that
+  // endpoint through on user-agent alone. The point there is arithmetic rather
+  // than admission: the count has to describe the `/v1/messages` request that
+  // follows, and that request will carry the block.
+  body.system = applyAttribution(
+    body.system,
+    await buildAttributionText(
+      body.messages,
+      options.profile.cliVersion,
+      options.profile.entrypoint,
+    ),
+  );
 
   return {
     body: new TextEncoder().encode(JSON.stringify(body)),
