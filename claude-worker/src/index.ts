@@ -24,13 +24,17 @@
  * The rebuild is bounded on purpose. It never touches `x-api-key` or
  * `authorization` -- upstream authorization stays the caller's, and this Worker
  * holds no credential to substitute. It shapes only the request surface: identity
- * headers, `anthropic-beta` derived from the body's own capabilities, the system
- * prompt's identity line, cache breakpoints and `metadata.user_id`. It is
+ * headers, `anthropic-beta` derived from the body's own capabilities, the billing
+ * attribution block at the head of `system`, and `metadata.user_id`. It is
  * idempotent, so a request crossing more than one hop is shaped once, not twice.
+ *
+ * What it deliberately does not add: the Claude Code identity sentence, a
+ * `# currentDate` reminder and cache breakpoints. Those are instructions or
+ * caller-owned cache policy, and the attribution block already buys admission
+ * without them -- see src/cloak/body.ts.
  *
  * Transport is out of scope and cannot be brought in: the relay reaches upstream
  * with rustls over HTTP/2, so the TLS and HTTP/2 fingerprints are the relay's.
- * Billing attribution is excluded by decision.
  */
 import { projectClaudeRequest, type CloakEnv } from "./cloak";
 import { createRelayHandler, type PipelineEnv } from "./pipeline";
