@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use egress_relay::https_forwarder::{build_egress_client, HttpsForwarder};
-use egress_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
-use egress_relay::relay_resolver::SafeResolver;
 use common::{
     client_tls_config, collect_body, issue_upstream_certificate, safe_resolver_for,
     server_tls_config, Issued, PinnedResolver,
 };
+use egress_relay::https_forwarder::{build_egress_client, HttpsForwarder};
+use egress_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
+use egress_relay::relay_resolver::SafeResolver;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

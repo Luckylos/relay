@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use common::{
+    client_tls_config, http_chunk, issue_upstream_certificate, server_tls_config, Issued,
+};
 use egress_relay::https_forwarder::{
     build_egress_client, build_egress_client_with_timeouts, HttpsForwarder,
 };
 use egress_relay::https_relay::{ForwardRequest, Forwarder};
-use common::{
-    client_tls_config, http_chunk, issue_upstream_certificate, server_tls_config, Issued,
-};
 use futures_util::StreamExt;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

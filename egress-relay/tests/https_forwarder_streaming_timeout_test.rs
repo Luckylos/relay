@@ -14,12 +14,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use egress_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
-use egress_relay::https_relay::{ForwardRequest, Forwarder};
 use common::{
     client_tls_config, collect_body, issue_upstream_certificate, server_tls_config, Issued,
     PinnedResolver,
 };
+use egress_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
+use egress_relay::https_relay::{ForwardRequest, Forwarder};
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

@@ -18,9 +18,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use common::{client_tls_config, PinnedResolver};
 use egress_relay::https_forwarder::{build_egress_client_with_timeouts, HttpsForwarder};
 use egress_relay::https_relay::{ForwardError, ForwardRequest, Forwarder};
-use common::{client_tls_config, PinnedResolver};
 use tokio::net::TcpListener;
 
 /// A listener that accepts nothing, with a full accept queue.
