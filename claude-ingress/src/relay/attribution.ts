@@ -11,11 +11,11 @@ type ClientRelayError = readonly [
 /**
  * How a relay-generated failure is presented to the client.
  *
- * Only three of the relay's machine codes describe something the client can act
- * on -- an upstream that timed out, an upstream that failed, and a relay at
- * capacity. Everything else names an internal gate (signature, nonce, protocol,
- * body limit, config), and naming it would tell a caller exactly which check it
- * tripped, so those all collapse to one opaque `502 relay_unavailable`.
+ * Known machine codes preserve the failure class for caller policy and operator
+ * diagnosis; none makes the current attempt recoverable, and this layer never
+ * retries it. Internal gates (signature, nonce, protocol, body limit, config)
+ * still collapse to one opaque `502 relay_unavailable`, because naming the gate
+ * would tell a caller exactly which check it tripped.
  */
 const RELAY_ERROR_MAP: ReadonlyMap<string, ClientRelayError> = new Map([
   ["relay_upstream_timeout", [504, "upstream request timed out", "upstream_timeout"]],
@@ -37,7 +37,9 @@ const RELAY_UNAVAILABLE: ClientRelayError = [
  * is indistinguishable from an upstream rejecting a bad API key, and an upstream
  * 502 is indistinguishable from a relay that could not connect. The parsed
  * attribution value is the single owner of that decision and of the metadata
- * emitted when the decision fails closed.
+ * emitted when the decision fails closed. The response is terminal in every
+ * branch: attribution changes its classification and presentation, not whether
+ * the current attempt can still complete.
  */
 export function attributeRelayResponse(
   upstream: Response,

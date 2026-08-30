@@ -104,6 +104,27 @@ it, by design (`docs/https-relay-design-v1.md`). It never falls back to
 Cloudflare's own egress. Independent means *the code stands alone*, not *the
 deployment silently degrades*.
 
+## Failure response semantics
+
+Relay attribution classifies a response that has already ended the current
+upstream attempt; it does not recover or retry that attempt:
+
+- `result=upstream` returns the upstream status, headers and body unchanged,
+  including genuine upstream `4xx` and `5xx` responses. That attempt failed at
+  the upstream and ends at the Worker.
+- `result=error` maps the relay's machine code to the existing client-facing
+  failure contract. That attempt also ends at the Worker.
+- Missing or invalid attribution fails closed to `502 relay_unavailable`; it is
+  not evidence by itself that either the relay or the target upstream caused the
+  original failure.
+
+The Worker has no retry or direct-egress fallback. Any whole-request retry or
+channel failover belongs to its caller and must use an operation-aware policy.
+There is no `599` carrier-status protocol in this repository: preserving failure
+provenance across an intermediary would not make the failed attempt succeed, so
+such an extension is justified only if measured caller behaviour depends on the
+distinction.
+
 ## Development
 
 ```bash

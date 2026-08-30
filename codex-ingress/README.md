@@ -208,6 +208,12 @@ The Worker does not send the Rust-only `version` or `conversation_id` fields.
 | Unsafe upstream `Location` | `502` | `invalid_upstream_redirect` |
 | Identity/body projection failed | `502` | `upstream_error` |
 
+Every response in this table terminates the current Worker attempt. The Worker
+does not retry it and never bypasses the relay. A genuine upstream `4xx` or `5xx`
+stamped `result=upstream` is returned unchanged and is not logged as a relay
+attribution failure. Attribution changes only failure classification and
+presentation; it does not turn a failed upstream attempt into a successful one.
+
 Request-body limit: 10 MiB (`CODEX_PROXY_MAX_BODY_BYTES`), matching the relay's
 own limit. The relay caps responses at 64 MiB and applies a 30-second
 response-header timeout.

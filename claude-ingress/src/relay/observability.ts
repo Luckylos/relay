@@ -13,6 +13,9 @@ interface RelayAttributionFailureEvent {
  * Emit the operator-only diagnosis for a response that cannot be attributed to
  * the upstream.
  *
+ * This event is diagnostic only: it neither marks the request retryable nor
+ * attempts to recover a response that has already ended the current attempt.
+ *
  * This boundary intentionally accepts only status plus parsed control metadata.
  * A Response, target, request headers and body cannot reach it, so credentials
  * and prompts cannot be added to the event by accidental object spreading.

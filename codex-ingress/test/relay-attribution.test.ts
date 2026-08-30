@@ -116,8 +116,8 @@ describe.each([
     expect(((await busy.json()) as { error: { type: string } }).error.type).toBe("relay_busy");
   });
 
-  it.each([400, 401, 404, 429, 500, 502, 503])(
-    "returns a genuine upstream %i verbatim",
+  it.each([400, 401, 404, 429, 500, 502, 503, 504])(
+    "keeps a genuine upstream %i as a terminal upstream failure",
     async (status) => {
       const upstream = new Response(JSON.stringify({ error: { message: "from upstream" } }), {
         status,
@@ -132,6 +132,7 @@ describe.each([
       expect(response.status, "an upstream status belongs to the upstream").toBe(status);
       const body = (await response.json()) as { error: { message: string } };
       expect(body.error.message).toBe("from upstream");
+      expect(errorLog).not.toHaveBeenCalled();
     },
   );
 
