@@ -3,8 +3,8 @@
 
 Why this exists
 ---------------
-`codex-ingress/` and `claude-ingress/` each hold their own copy of the relay
-plumbing: 2054 lines across 21 files that are byte-identical today. The
+`codex-ingress/` and `claude-ingress/` each hold their own byte-identical
+copy of the shared relay plumbing declared below. The
 duplication is deliberate and `protocol/conformance.py` already explains why --
 each package must install, test, build, deploy and roll back on its own, which a
 shared source directory would have prevented.
@@ -17,10 +17,10 @@ exposed to this are the ones carrying security semantics -- `src/pipeline.ts`
 one-sided security regression, and nothing in the repository turns red.
 
 `conformance.py` states the principle -- "byte-identity is therefore a gated
-invariant rather than a filesystem fact" -- but enforces it for two files only:
-`src/relay/protocol.ts` and `src/relay/signing.ts`, 194 of those 2054 lines. The
-remaining 1860 are held in sync by hand. Git history shows the discipline has
-held so far: every shared file points at the same commit on both sides. This
+invariant rather than a filesystem fact" -- but enforces it for the protocol
+fixture implementations only. The remaining shared source, tests and toolchain
+files would otherwise be held in sync by hand. Git history shows the discipline
+has held so far: every shared file points at the same commit on both sides. This
 gate is what keeps that true when it stops being remembered.
 
 What it does NOT do
@@ -70,9 +70,12 @@ SHARED_IDENTICAL: dict[str, tuple[str, ...]] = {
         "src/relay/client.ts",
         "src/relay/config.ts",
         "src/relay/attribution.ts",
+        "src/relay/control.ts",
+        "src/relay/observability.ts",
     ),
     "tests for the shared code (drift here means one side stops checking it)": (
         "test/redirect.test.ts",
+        "test/relay-attribution.test.ts",
         "test/relay-client.test.ts",
         "test/relay-signing.test.ts",
         "test/target.test.ts",

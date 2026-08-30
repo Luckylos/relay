@@ -1,3 +1,10 @@
+import { isRelayControlHeader } from "./relay/control";
+export {
+  LEGACY_RELAY_CONTROL_PREFIX,
+  RELAY_CONTROL_PREFIX,
+  isRelayControlHeader,
+} from "./relay/control";
+
 export const RESPONSE_HOP_BY_HOP_HEADERS = [
   "connection",
   "keep-alive",
@@ -70,30 +77,6 @@ export const SOURCE_REVEALING_HEADERS = [
  * an upstream ever arrives under this prefix.
  */
 export const CLOUDFLARE_HEADER_PREFIX = "cf-";
-
-/**
- * Control headers are reserved for the relay envelope itself.
- *
- * Two prefixes, not one. The relay and both ingresses deploy independently, so
- * during the migration window both envelope generations are live on the wire.
- * Stripping only the current prefix would let an open caller forge
- * `x-codex-relay-result` and have this Worker's own attribution read believe
- * it. Both generations stay reserved permanently: dropping the legacy prefix
- * from the strip set is what reopens the forgery path, not what closes it.
- */
-export const RELAY_CONTROL_PREFIX = "x-egress-relay-";
-export const LEGACY_RELAY_CONTROL_PREFIX = "x-codex-relay-";
-
-const RELAY_CONTROL_PREFIXES = [
-  RELAY_CONTROL_PREFIX,
-  LEGACY_RELAY_CONTROL_PREFIX,
-] as const;
-
-/** True for a control header in either generation's namespace. */
-export function isRelayControlHeader(name: string): boolean {
-  const lower = name.toLowerCase();
-  return RELAY_CONTROL_PREFIXES.some((prefix) => lower.startsWith(prefix));
-}
 
 const STRIPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set<string>([
   ...REQUEST_HOP_BY_HOP_HEADERS,

@@ -28,18 +28,18 @@ deployed as two distinct Cloudflare Workers, so each must be installable,
 testable, buildable, deployable and **roll-back-able on its own** — a shared
 source directory would have made one deploy able to break the other.
 
-The duplication is the cost of that independence: 2054 lines across 21 files are
+The duplication is the cost of that independence: shared authored files are
 byte-identical between the two packages, so a fix has to land in both or one
-Worker silently keeps the old behaviour. Two gates cover that risk, and between
-them every one of those lines:
+Worker silently keeps the old behaviour. Two gates cover that risk:
 
-- `protocol/shared_drift.py` requires the 21 files to stay byte-identical, and
+- `protocol/shared_drift.py` requires every declared shared file to stay
+  byte-identical, and
   requires every file in either package to be classified as shared, deliberately
   divergent (with the reason), or package-local. A new file fails the gate until
   it is classified, so an unguarded copy cannot be added by default.
-- `protocol/conformance.py` covers the 194 lines of wire protocol more strongly
-  still, driving *both* TypeScript implementations over shared vectors rather
-  than one as a proxy for the other.
+- `protocol/conformance.py` covers the wire protocol more strongly still,
+  driving *both* TypeScript implementations over shared vectors rather than one
+  as a proxy for the other.
 
 The files most exposed are the ones carrying security semantics — `pipeline.ts`
 (fail-closed ordering), `target.ts` (SSRF policy) and `redirect.ts` (which keeps

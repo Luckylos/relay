@@ -13,7 +13,7 @@ on:
 # `conformance` is the only job that spans them, and it carries the two checks
 # that exist because of the duplication that independence requires:
 #
-#   * shared_drift.py -- the 2285 lines both Worker packages carry byte-identical
+#   * shared_drift.py -- the files both Worker packages carry byte-identical
 #     really are identical, and every file is classified as shared, deliberately
 #     divergent, or package-local.
 #   * conformance.py -- the wire protocol, implemented four times (Rust, two
@@ -83,12 +83,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Shared-code byte identity between the two Workers
-        # The two packages carry 2285 lines of identical relay plumbing on
-        # purpose, so each can deploy and roll back alone. conformance.py gates
-        # 235 of those lines; this gates the rest, including src/pipeline.ts,
-        # src/headers.ts, src/target.ts and src/redirect.ts, where a one-sided
-        # edit is a one-sided security regression. Needs no toolchain of its own,
-        # so it runs before the Rust and Node setup below and fails fast.
+        # The two packages carry identical relay plumbing on purpose, so each can
+        # deploy and roll back alone. conformance.py gates the wire protocol more
+        # deeply; this gate covers the full declared shared surface, including
+        # src/pipeline.ts, src/headers.ts, src/target.ts and src/redirect.ts,
+        # where a one-sided edit is a one-sided security regression.
+        # Needs no toolchain of its own, so it runs before the Rust and Node
+        # setup below and fails fast.
         run: python3 protocol/shared_drift.py
 
       - uses: dtolnay/rust-toolchain@stable

@@ -1,48 +1,12 @@
 import { errorResponse, type RelayErrorType } from "../errors";
+import { readRelayResponseAttribution } from "./control";
+import { logRelayAttributionFailure } from "./observability";
 
-/**
- * Relay response control headers (spec section 8).
- *
- * These are an internal Worker<->relay channel and are consumed here: they must
- * never continue to the client.
- *
- * Read in both generations. The relay and this Worker deploy independently, so
- * a relay that has not yet been upgraded answers only in the legacy namespace
- * while an upgraded one answers in both. Reading only the current namespace
- * would see no `result` header at all and fail every request closed to
- * `502 relay_unavailable` -- a total outage produced by a rename, not by a
- * fault. Current is preferred so an upgraded relay's own value wins if an
- * upstream ever manages to place a legacy-named header.
- */
-const RESULT_HEADERS = ["x-egress-relay-result", "x-codex-relay-result"] as const;
-const ERROR_HEADERS = ["x-egress-relay-error", "x-codex-relay-error"] as const;
-const REQUEST_ID_HEADERS = [
-  "x-egress-relay-request-id",
-  "x-codex-relay-request-id",
-] as const;
-
-function readControl(
-  headers: Headers,
-  names: readonly string[],
-): string | null {
-  for (const name of names) {
-    const value = headers.get(name);
-    if (value !== null) {
-      return value.trim().toLowerCase();
-    }
-  }
-  return null;
-}
-
-function readMetadata(headers: Headers, names: readonly string[]): string | null {
-  for (const name of names) {
-    const value = headers.get(name)?.trim();
-    if (value) {
-      return value;
-    }
-  }
-  return null;
-}
+type ClientRelayError = readonly [
+  status: number,
+  message: string,
+  type: RelayErrorType,
+];
 
 /**
  * How a relay-generated failure is presented to the client.
@@ -53,14 +17,14 @@ function readMetadata(headers: Headers, names: readonly string[]): string | null
  * body limit, config), and naming it would tell a caller exactly which check it
  * tripped, so those all collapse to one opaque `502 relay_unavailable`.
  */
-const RELAY_ERROR_MAP: ReadonlyMap<string, readonly [number, string, RelayErrorType]> = new Map([
-  ["relay_upstream_timeout", [504, "upstream request timed out", "upstream_timeout"] as const],
-  ["relay_upstream_error", [502, "upstream request failed", "upstream_error"] as const],
-  ["relay_forward_unavailable", [502, "upstream request failed", "upstream_error"] as const],
-  ["relay_busy", [503, "relay is at capacity", "relay_busy"] as const],
+const RELAY_ERROR_MAP: ReadonlyMap<string, ClientRelayError> = new Map([
+  ["relay_upstream_timeout", [504, "upstream request timed out", "upstream_timeout"]],
+  ["relay_upstream_error", [502, "upstream request failed", "upstream_error"]],
+  ["relay_forward_unavailable", [502, "upstream request failed", "upstream_error"]],
+  ["relay_busy", [503, "relay is at capacity", "relay_busy"]],
 ]);
 
-const RELAY_UNAVAILABLE: readonly [number, string, RelayErrorType] = [
+const RELAY_UNAVAILABLE: ClientRelayError = [
   502,
   "relay egress is unavailable",
   "relay_unavailable",
@@ -71,19 +35,20 @@ const RELAY_UNAVAILABLE: readonly [number, string, RelayErrorType] = [
  *
  * The status code alone cannot answer "whose error is this": the relay's own 401
  * is indistinguishable from an upstream rejecting a bad API key, and an upstream
- * 502 is indistinguishable from a relay that could not connect. `Result` settles
- * it, so this is the single point where that decision is made.
+ * 502 is indistinguishable from a relay that could not connect. The parsed
+ * attribution value is the single owner of that decision and of the metadata
+ * emitted when the decision fails closed.
  */
 export function attributeRelayResponse(
   upstream: Response,
   projectHeaders: (headers: Headers) => Headers,
 ): Response {
-  const result = readControl(upstream.headers, RESULT_HEADERS);
+  const attribution = readRelayResponseAttribution(upstream.headers);
 
   // Missing attribution means an unknown or pre-upgrade relay. Reading that as
   // `upstream` would pass a relay 401 straight through -- the exact leak the
   // header exists to prevent -- so absence fails closed to "relay error".
-  if (result === "upstream") {
+  if (attribution.result === "upstream") {
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -91,25 +56,9 @@ export function attributeRelayResponse(
     });
   }
 
-  const machineCode = readControl(upstream.headers, ERROR_HEADERS);
-
-  // The client must not learn which internal gate rejected the request, but the
-  // operator must be able to distinguish that gate from a headerless Cloudflare
-  // or tunnel response. Keep the event deliberately metadata-only: no target,
-  // request headers, response headers, or body can carry credentials or prompts
-  // into Worker logs.
-  console.error(
-    JSON.stringify({
-      event: "relay_attribution_failure",
-      relay_status: upstream.status,
-      relay_result: result,
-      relay_error: machineCode,
-      relay_request_id: readMetadata(upstream.headers, REQUEST_ID_HEADERS),
-      cf_ray: readMetadata(upstream.headers, ["cf-ray"]),
-    }),
-  );
-
-  const [status, message, type] = RELAY_ERROR_MAP.get(machineCode ?? "") ?? RELAY_UNAVAILABLE;
+  logRelayAttributionFailure(upstream.status, attribution);
+  const [status, message, type] =
+    RELAY_ERROR_MAP.get(attribution.error ?? "") ?? RELAY_UNAVAILABLE;
 
   // Built from scratch, never from the relay's body: the relay's own JSON names
   // the internal gate that rejected the request.

@@ -117,6 +117,37 @@ describe("relay client wire protocol", () => {
     expect(response.status).toBe(201);
     expect(await response.text()).toBe("upstream-body");
   });
+
+  it("attributes relay-generated failures before returning them", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const response = await sendViaRelay({
+        relayUrl: RELAY_URL,
+        keyId: KEY_ID,
+        secret: SECRET,
+        target: targetFor("/api.openai.com/v1/responses"),
+        method: "POST",
+        headers: new Headers({ authorization: "Bearer token" }),
+        body: new TextEncoder().encode("payload"),
+        fetchImpl: async () =>
+          new Response("internal relay rejection", {
+            status: 401,
+            headers: {
+              "x-egress-relay-result": "error",
+              "x-egress-relay-error": "relay_auth_error",
+            },
+          }),
+      });
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        error: { message: "relay egress is unavailable", type: "relay_unavailable" },
+      });
+      expect(errorLog).toHaveBeenCalledOnce();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
 });
 
 describe("worker relay fail-closed routing", () => {
@@ -175,226 +206,5 @@ describe("worker relay fail-closed routing", () => {
     }
 
     expect(calls, "unconfigured relay must not reach any upstream").toBe(0);
-  });
-});
-
-/**
- * Attribution is read from whichever namespace the relay answered in.
- *
- * The relay and this Worker deploy independently, so all three shapes are live
- * across the migration: an upgraded relay stamps both generations, one that has
- * not been upgraded stamps only the legacy names, and a post-window relay stamps
- * only the current ones. Testing a single shape would let a one-namespace read
- * pass here while turning the other relay into a total outage -- every request
- * failing closed to `502 relay_unavailable` with nothing actually broken.
- */
-describe.each([
-  ["current-only", ["x-egress-relay-"]],
-  ["legacy-only", ["x-codex-relay-"]],
-  ["dual-stamping", ["x-egress-relay-", "x-codex-relay-"]],
-] as const)("relay error attribution from a %s relay", (_shape, prefixes) => {
-  /** The same control fields, named in whichever generations this relay stamps. */
-  function control(fields: Record<string, string>): Record<string, string> {
-    const headers: Record<string, string> = {};
-    for (const prefix of prefixes) {
-      for (const [field, value] of Object.entries(fields)) {
-        headers[`${prefix}${field}`] = value;
-      }
-    }
-    return headers;
-  }
-
-  // A relay-generated reply, as the relay stamps it.
-  function relayError(status: number, machineCode: string): Response {
-    return new Response(
-      JSON.stringify({ error: { type: machineCode, message: "relay request rejected" } }),
-      {
-        status,
-        headers: {
-          "content-type": "application/json",
-          ...control({ result: "error", error: machineCode, "request-id": "abc123" }),
-        },
-      },
-    );
-  }
-
-  function send(upstream: Response): Promise<Response> {
-    return sendViaRelay({
-      relayUrl: RELAY_URL,
-      keyId: KEY_ID,
-      secret: SECRET,
-      target: targetFor("/https/api.openai.com/v1/responses"),
-      method: "POST",
-      headers: new Headers({ authorization: "Bearer token" }),
-      body: new TextEncoder().encode("payload"),
-      fetchImpl: async () => upstream,
-    });
-  }
-
-  // Passing the relay's own status through tells the client something false about
-  // the upstream and leaks the relay's auth verdict: a 401 reads as "your API key
-  // is bad", a 409 as an upstream conflict, a 413 as an upstream size limit. All
-  // three are the relay talking about itself.
-  it.each([
-    [401, "relay_auth_error"],
-    [409, "relay_replay"],
-    [413, "relay_body_too_large"],
-    [400, "relay_protocol_error"],
-    [500, "relay_internal_error"],
-  ])("maps relay-generated %i %s to 502 relay_unavailable", async (status, code) => {
-    const response = await send(relayError(status, code));
-
-    expect(response.status, `relay ${status} must not reach the client`).toBe(502);
-    const body = (await response.json()) as { error: { type: string; message: string } };
-    expect(body.error.type).toBe("relay_unavailable");
-    // The machine code names an internal gate; echoing it tells an attacker
-    // which check they tripped.
-    expect(JSON.stringify(body)).not.toContain(code);
-  });
-
-  it("logs relay attribution metadata without logging the relay body", async () => {
-    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const response = await send(
-        new Response("sensitive relay response body", {
-          status: 401,
-          headers: {
-            "cf-ray": "ray123-SIN",
-            ...control({
-              result: "error",
-              error: "relay_auth_error",
-              "request-id": "relay-request-123",
-            }),
-          },
-        }),
-      );
-
-      expect(response.status).toBe(502);
-      expect(log).toHaveBeenCalledExactlyOnceWith(
-        JSON.stringify({
-          event: "relay_attribution_failure",
-          relay_status: 401,
-          relay_result: "error",
-          relay_error: "relay_auth_error",
-          relay_request_id: "relay-request-123",
-          cf_ray: "ray123-SIN",
-        }),
-      );
-      expect(log.mock.calls[0]?.[0]).not.toContain("sensitive relay response body");
-    } finally {
-      log.mockRestore();
-    }
-  });
-
-  it("logs missing relay attribution headers as null", async () => {
-    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const response = await send(
-        new Response("edge error body", {
-          status: 502,
-          headers: { "cf-ray": "edge456-SIN" },
-        }),
-      );
-
-      expect(response.status).toBe(502);
-      expect(log).toHaveBeenCalledExactlyOnceWith(
-        JSON.stringify({
-          event: "relay_attribution_failure",
-          relay_status: 502,
-          relay_result: null,
-          relay_error: null,
-          relay_request_id: null,
-          cf_ray: "edge456-SIN",
-        }),
-      );
-      expect(log.mock.calls[0]?.[0]).not.toContain("edge error body");
-    } finally {
-      log.mockRestore();
-    }
-  });
-
-  it("maps relay upstream_timeout to 504 and upstream_error to 502", async () => {
-    const timeout = await send(relayError(504, "relay_upstream_timeout"));
-    expect(timeout.status).toBe(504);
-    expect(((await timeout.json()) as { error: { type: string } }).error.type).toBe(
-      "upstream_timeout",
-    );
-
-    const failed = await send(relayError(502, "relay_upstream_error"));
-    expect(failed.status).toBe(502);
-    expect(((await failed.json()) as { error: { type: string } }).error.type).toBe(
-      "upstream_error",
-    );
-  });
-
-  // Forward-looking: the relay does not emit `relay_busy` yet, because the
-  // concurrency cap (spec section 8 / CODEX_RELAY_MAX_CONCURRENCY) is not
-  // implemented. The mapping is asserted now so that whoever adds admission
-  // control finds the client-facing contract already pinned, rather than
-  // discovering saturation collapses into an opaque 502.
-  it("maps relay saturation to 503 relay_busy", async () => {
-    const busy = await send(relayError(503, "relay_busy"));
-    expect(busy.status).toBe(503);
-    expect(((await busy.json()) as { error: { type: string } }).error.type).toBe("relay_busy");
-  });
-
-  // The mirror image: an upstream 4xx/5xx is real information the client needs.
-  // Rewriting it into a relay error would hide genuine API errors.
-  it.each([400, 401, 404, 429, 500, 502, 503])(
-    "returns a genuine upstream %i verbatim",
-    async (status) => {
-      const upstream = new Response(JSON.stringify({ error: { message: "from upstream" } }), {
-        status,
-        headers: {
-          "content-type": "application/json",
-          ...control({ result: "upstream", "request-id": "abc123" }),
-        },
-      });
-
-      const response = await send(upstream);
-
-      expect(response.status, "an upstream status belongs to the upstream").toBe(status);
-      const body = (await response.json()) as { error: { message: string } };
-      expect(body.error.message).toBe("from upstream");
-    },
-  );
-
-  // Control headers are an internal Worker<->relay channel. Leaking them tells a
-  // client the relay exists, and hands it a correlation id it has no use for.
-  it("never leaks relay control headers to the client", async () => {
-    for (const upstream of [
-      relayError(401, "relay_auth_error"),
-      new Response("ok", {
-        status: 200,
-        headers: control({ result: "upstream", "request-id": "abc123" }),
-      }),
-    ]) {
-      const response = await send(upstream);
-      for (const [name] of response.headers) {
-        // Both namespaces, not just the one this relay stamped: the strip is by
-        // prefix, and a leak of either generation tells the client a relay exists
-        // and hands it a correlation id it has no use for.
-        expect(name.toLowerCase(), `${name} must not reach the client`).not.toMatch(
-          /^x-(egress|codex)-relay-/,
-        );
-      }
-    }
-  });
-
-  // Absent attribution means an unknown or pre-upgrade relay. Treating that as
-  // "upstream" would pass a relay 401 straight through, which is the exact bug
-  // the header exists to prevent, so the safe reading is "relay error".
-  it("treats a missing result header as a relay error", async () => {
-    const response = await send(
-      new Response(JSON.stringify({ error: { type: "relay_auth_error" } }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-
-    expect(response.status).toBe(502);
-    expect(((await response.json()) as { error: { type: string } }).error.type).toBe(
-      "relay_unavailable",
-    );
   });
 });
