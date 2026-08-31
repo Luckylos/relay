@@ -41,10 +41,6 @@ pub fn validate_resolved_addresses(addresses: &[IpAddr]) -> Result<Vec<IpAddr>, 
     Ok(addresses.to_vec())
 }
 
-pub fn is_forbidden_address(address: IpAddr) -> bool {
-    classify_address(address) == AddressClass::Forbidden
-}
-
 fn classify_address(address: IpAddr) -> AddressClass {
     match address {
         IpAddr::V4(address) => classify_ipv4(address),

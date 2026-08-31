@@ -1,4 +1,4 @@
-//! Outbound TLS client construction.
+//! Outbound TLS configuration.
 //!
 //! The whole point of this crate is that the ClientHello we emit is
 //! byte-for-byte the one a real Codex CLI emits. That is achieved by using the
@@ -28,9 +28,9 @@ use std::sync::Arc;
 
 /// The rustls `ClientConfig` every outbound path in this crate must use.
 ///
-/// Extracted so the HTTPS relay can build its own client (custom resolver, no
-/// redirects) without duplicating — or accidentally diverging from — the
-/// fingerprint-critical crypto/ALPN setup.
+/// Kept separate from client construction so each caller can supply its own
+/// resolver and redirect policy without duplicating — or accidentally diverging
+/// from — the fingerprint-critical crypto/ALPN setup above.
 pub fn build_tls_config() -> rustls::ClientConfig {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -44,18 +44,4 @@ pub fn build_tls_config() -> rustls::ClientConfig {
     .with_no_client_auth();
     tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     tls
-}
-
-/// Build the shared rustls-backed reqwest client. This is the single outbound
-/// client for the process; sharing it gives connection pooling / keep-alive,
-/// mirroring how the real Codex CLI reuses one h2 connection per session.
-pub fn build_client(timeout_secs: u64) -> reqwest::Client {
-    // Do NOT enable http2_prior_knowledge: that sends h2c and drops the TLS
-    // ALPN handshake the fingerprint depends on.
-    reqwest::Client::builder()
-        .use_preconfigured_tls(build_tls_config())
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .pool_idle_timeout(std::time::Duration::from_secs(90))
-        .build()
-        .expect("failed to build rustls reqwest client")
 }
