@@ -168,11 +168,11 @@ impl Resolve for SharedResolver {
     }
 }
 
-/// Production client with an explicit stall budget.
+/// Production client: the fingerprint-critical TLS config from
+/// [`crate::egress::tls::build_tls_config`] plus the SSRF-safe system resolver.
 ///
-/// Same TLS config and SSRF-safe resolver as [`build_production_client`]; the
-/// stall budget is separated so operators can widen SSE tolerance without
-/// touching the overall ceiling.
+/// The stall budget is an explicit parameter so operators can widen SSE
+/// tolerance without touching the overall ceiling.
 pub fn build_production_client_with_stall(
     timeout_secs: u64,
     stream_stall_timeout_secs: u64,
@@ -184,15 +184,6 @@ pub fn build_production_client_with_stall(
         timeout_secs,
         stream_stall_timeout_secs,
         connect_timeout_secs,
-    )
-}
-
-/// Production client: shared TLS config plus the SSRF-safe system resolver.
-pub fn build_production_client(timeout_secs: u64) -> Client {
-    build_egress_client(
-        tls::build_tls_config(),
-        Arc::new(SafeResolver::system()),
-        timeout_secs,
     )
 }
 
