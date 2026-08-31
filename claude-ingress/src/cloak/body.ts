@@ -40,13 +40,8 @@
 import { applyAttribution, buildAttributionText } from "./attribution";
 import type { ClaudeEndpoint, RequestCapabilities } from "./beta";
 import { buildUserId, type ClientIdentity } from "./identity";
+import { isObject, type JsonObject } from "./json";
 import type { CloakProfile } from "./profile";
-
-type JsonObject = Record<string, unknown>;
-
-function isObject(value: unknown): value is JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 export interface BodyTransformResult {
   readonly body: Uint8Array;
