@@ -29,6 +29,8 @@
  * would recompute it on every turn and invalidate the prefix each time; that is
  * why this follows the first-message reading.
  */
+import { sha256Hex } from "./hash";
+import { isObject } from "./json";
 
 /**
  * Salt for the build fingerprint.
@@ -56,21 +58,6 @@ const FINGERPRINT_INDICES: readonly number[] = [4, 7, 20];
 
 /** Substituted for an offset past the end of the message. */
 const MISSING_CHARACTER = "0";
-
-type JsonObject = Record<string, unknown>;
-
-function isObject(value: unknown): value is JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-const encoder = new TextEncoder();
-
-async function sha256Hex(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 /**
  * The first user message's leading text.

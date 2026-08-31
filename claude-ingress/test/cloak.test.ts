@@ -749,6 +749,35 @@ describe("body handling", () => {
     expect(result.body).toBe(raw);
   });
 
+  it("leaves a JSON array body untouched", async () => {
+    // `typeof [] === "object"`, so the narrowing this shares with the
+    // attribution walk has to exclude arrays explicitly. An array admitted here
+    // would be written to by key and then re-serialized without those keys.
+    const raw = encode([{ model: "claude-sonnet-4-6", messages: MESSAGES }]);
+    const result = await transformBody(raw, {
+      endpoint: "messages",
+      identity: IDENTITY,
+      profile: DEFAULT_CLOAK_PROFILE,
+      contentType: "application/json",
+    });
+
+    expect(result.body).toBe(raw);
+  });
+
+  it("leaves a JSON null body untouched", async () => {
+    // `typeof null === "object"` as well, and null is the one value whose keys
+    // cannot be read at all -- admitting it would throw rather than pass through.
+    const raw = encode(null);
+    const result = await transformBody(raw, {
+      endpoint: "messages",
+      identity: IDENTITY,
+      profile: DEFAULT_CLOAK_PROFILE,
+      contentType: "application/json",
+    });
+
+    expect(result.body).toBe(raw);
+  });
+
   it("leaves an unrecognised endpoint untouched", async () => {
     // An unfamiliar shape may carry neither `system` nor `metadata`; writing
     // either would be inventing a schema.

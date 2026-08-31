@@ -17,6 +17,7 @@
  * and never logged, echoed, or included in the derived output, so the identifiers
  * cannot be walked back to the credential.
  */
+import { sha256Hex } from "./hash";
 import type { CloakProfile } from "./profile";
 
 export interface ClientIdentity {
@@ -33,15 +34,6 @@ export interface ClientIdentity {
    * exist.
    */
   readonly accountUuid: "";
-}
-
-const encoder = new TextEncoder();
-
-async function sha256Hex(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 /**
